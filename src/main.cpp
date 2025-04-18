@@ -15,8 +15,14 @@ HX711 scale;
 
 // Calibration values based on your measurements
 #define CALIBRATION_LOW -400    // reading at no load  -331 is the average
-#define CALIBRATION_HIGH 998000 // reading at 950g
-#define WEIGHT_HIGH 950         // actual weight in grams
+// #define HOME_SET 1
+#ifdef HOME_SET
+  #define CALIBRATION_HIGH -473500 // reading at 950g
+  #define WEIGHT_HIGH 550         // actual weight in grams
+#else // OFFICE_SET
+  #define CALIBRATION_HIGH 998000 // reading at 950g
+  #define WEIGHT_HIGH 950         // actual weight in grams
+#endif
 
 // BLE UUIDs
 #define SERVICE_UUID        "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -28,7 +34,7 @@ HX711 scale;
 
 // Stabilization settings
 #define STABILITY_COUNT 3
-#define STABILITY_TOLERANCE 0.1  // in grams
+#define STABILITY_TOLERANCE 1.0  // in grams
 #define STABILITY_WINDOW 5       // window for stability check
 
 // Primary moving average (existing)
@@ -45,6 +51,36 @@ bool isStable = false;
 
 // Add near the top with other globals
 time_t timeOffset = 0;  // Offset in seconds from ESP32's boot time
+
+// Update enum to better reflect states
+enum EventState {
+  STABLE,         // Weight is stable, waiting for changes
+  DROP_DETECTED,  // Weight dropped, waiting for restabilization
+};
+
+// Add with other globals
+EventState eventState = STABLE;
+float baselineWeight = 0;
+float eventStartWeight = 0;
+time_t eventStartTime = 0;
+
+// Update Record struct to include event type
+enum RecordType {
+  MEASUREMENT,
+  SIP,
+  REFILL
+};
+
+struct Record {
+  time_t start_time;
+  time_t end_time;    // 0 if not stabilized
+  float grams;
+  RecordType type;    // Added field
+};
+
+std::deque<Record> recordBuffer;
+bool loggingEnabled = true;
+int samplingRateHz = 20;  // default from original delay(25)
 
 // Update getTimestamp function
 String getTimestamp() {
@@ -75,16 +111,6 @@ class MyServerCallbacks : public BLEServerCallbacks {
     deviceConnected = false;
   }
 };
-
-struct Record {
-  time_t start_time;  // when the measurement started
-  time_t end_time;    // when measurement stabilized (0 if not stabilized)
-  float grams;
-};
-
-std::deque<Record> recordBuffer;
-bool loggingEnabled = true;
-int samplingRateHz = 20;  // default from original delay(25)
 
 void handleCommand(const String &cmd) {
   Serial.print("Received command: ");
@@ -128,7 +154,10 @@ void handleCommand(const String &cmd) {
       const auto &r = recordBuffer[i];
       json += "{\"start_time\":" + String(r.start_time) + 
               ",\"end_time\":" + String(r.end_time) + 
-              ",\"grams\":" + String(r.grams, 2) + "}";
+              ",\"grams\":" + String(r.grams, 2) + 
+              ",\"type\":\"" + String(r.type == SIP ? "sip" : 
+                                    r.type == REFILL ? "refill" : 
+                                    "measurement") + "\"}";
       if (i < recordBuffer.size() - 1) json += ",";
     }
     json += "]";
@@ -281,7 +310,18 @@ void setup()
   Serial.println("Ready!");
 }
 
+int STABILITY_CHECK_PRINT_COUNT = 0;
 bool checkStability(float newValue) {
+
+  if (STABILITY_CHECK_PRINT_COUNT++ % 10 == 0) {
+    // Add debug prints to see what values we're checking
+    Serial.printf("Stability check - new value: %.1f, window: ", newValue);
+    for (int i = 0; i < STABILITY_WINDOW; i++) {
+      Serial.printf("%.1f ", stableReadings[i]);
+    }
+    Serial.println();
+  }
+
   // Update stability window
   stableReadings[stableIndex] = newValue;
   stableIndex = (stableIndex + 1) % STABILITY_WINDOW;
@@ -303,11 +343,17 @@ bool checkStability(float newValue) {
     maxVal = max(maxVal, val);
   }
   
-  return (maxVal - minVal) <= STABILITY_TOLERANCE;
+  bool stable = (maxVal - minVal) <= STABILITY_TOLERANCE;
+  Serial.printf("Stability range: %.1f to %.1f (diff: %.1f) -> %s\n", 
+    minVal, maxVal, maxVal - minVal, stable ? "stable" : "unstable");
+  return stable;
 }
 
-void printStatus(float raw, float calibrated, float grams, bool stable) {
-  return;
+void printStatus(float raw, float calibrated, float grams, bool stable, const char* event = nullptr) {
+  char timestamp[25];
+  time_t now = getCorrectedTime();
+  strftime(timestamp, sizeof(timestamp), "%H:%M:%S", localtime(&now));
+  
   Serial.print("Raw: ");
   Serial.print(raw);
   Serial.print(" | Calibrated: ");
@@ -316,6 +362,15 @@ void printStatus(float raw, float calibrated, float grams, bool stable) {
   Serial.print(grams, 1);
   Serial.print(" | Status: ");
   Serial.println(stable ? "STABLE" : "settling");
+  if (event) {
+    Serial.printf("[%s] %s: %.1fg\n", timestamp, event, grams);
+  } else {
+    Serial.printf("[%s] Weight %s: %.1fg\n", 
+      timestamp,
+      stable ? "stabilized" : "changing",
+      grams
+    );
+  }
 }
 
 void addToBuffer(float grams, bool stable = false) {
@@ -328,11 +383,11 @@ void addToBuffer(float grams, bool stable = false) {
         recordBuffer.back().end_time = getCorrectedTime();
       } else {
         // New stable reading
-        recordBuffer.push_back({getCorrectedTime(), getCorrectedTime(), grams});
+        recordBuffer.push_back({getCorrectedTime(), getCorrectedTime(), grams, MEASUREMENT});
       }
     } else {
       // Unstable reading, just record the start time
-      recordBuffer.push_back({getCorrectedTime(), 0, grams});
+      recordBuffer.push_back({getCorrectedTime(), 0, grams, MEASUREMENT});
     }
   }
 }
@@ -358,29 +413,88 @@ void loop()
     vTaskDelay(1); // Yield to BLE stack
   }
 
-  // Primary moving average calculation
+  // Calculate weight with moving average
   total = total - readings[readIndex];
   readings[readIndex] = scale.get_units();
   total = total + readings[readIndex];
   readIndex = (readIndex + 1) % WINDOW_SIZE;
   average = total / WINDOW_SIZE;
   
-  // Convert to grams using map
   float grams = map(average, CALIBRATION_LOW, CALIBRATION_HIGH, 0, WEIGHT_HIGH);
   grams = max(0.0f, grams);
   
-  // Check stability
+  // Round very small values to 0 to prevent noise
+  if (abs(grams) < 0.1) {
+    grams = 0;
+  }
+  
+  // Check stability on grams value after rounding
   isStable = checkStability(grams);
   
-  // Only print if stable or value changed significantly
-  static float lastPrintedValue = -1;
-  if (isStable || abs(grams - lastPrintedValue) > STABILITY_TOLERANCE) {
-    printStatus(scale.read(), average, grams, isStable);
-    lastPrintedValue = grams;
-    
-    // Add to buffer with stability information
-    addToBuffer(grams, isStable);
+  // State machine logic
+  static bool wasStable = false;
+  char timestamp[25];
+  time_t now = getCorrectedTime();
+  strftime(timestamp, sizeof(timestamp), "%H:%M:%S", localtime(&now));
+
+  // printStatus(scale.read(), average, grams, isStable);
+
+  switch (eventState) {
+    case STABLE:
+      if (wasStable && !isStable) {
+        // Transition: STABLE → UNSTABLE
+        float delta = grams - baselineWeight;
+        if (delta < -STABILITY_TOLERANCE) {
+          // Significant drop detected
+          eventStartTime = getCorrectedTime();
+          eventStartWeight = baselineWeight;  // Store original weight
+          eventState = DROP_DETECTED;
+          Serial.printf("[%s] Drop detected: %.1fg → %.1fg\n", timestamp, baselineWeight, grams);
+        }
+      } else if (isStable) {
+        // Update baseline when stable
+        if (!wasStable) {
+          baselineWeight = grams;
+          Serial.printf("[%s] New baseline: %.1fg\n", timestamp, grams);
+        }
+      }
+      break;
+
+    case DROP_DETECTED:
+      if (!wasStable && isStable) {
+        // Weight has restabilized after drop
+        float delta = grams - eventStartWeight;
+        time_t endTime = getCorrectedTime();
+        
+        if (delta < -STABILITY_TOLERANCE) {
+          // SIP: weight is lower than original
+          float sipAmount = eventStartWeight - grams;
+          Serial.printf("[%s] Sip detected: %.1fg (%.1fg → %.1fg)\n", 
+            timestamp, sipAmount, eventStartWeight, grams);
+          if (loggingEnabled) {
+            recordBuffer.push_back({eventStartTime, endTime, sipAmount, SIP});
+          }
+          baselineWeight = grams;  // Update baseline to new weight
+        } else if (delta > STABILITY_TOLERANCE) {
+          // REFILL: weight is higher than original
+          Serial.printf("[%s] Refill detected: %.1fg → %.1fg\n", 
+            timestamp, eventStartWeight, grams);
+          if (loggingEnabled) {
+            recordBuffer.push_back({eventStartTime, endTime, grams - eventStartWeight, REFILL});
+          }
+          baselineWeight = grams;  // Update baseline to new weight
+        } else {
+          // Weight returned to original ±tolerance
+          Serial.printf("[%s] False alarm, weight returned to baseline\n", timestamp);
+          baselineWeight = grams;
+        }
+        eventState = STABLE;
+      }
+      break;
   }
+
+  // Update stability tracking
+  wasStable = isStable;
 
   // Use task delay instead of blocking delay
   vTaskDelay(pdMS_TO_TICKS(SAMPLING_RATE_MS));
