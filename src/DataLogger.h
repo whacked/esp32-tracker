@@ -25,6 +25,17 @@ private:
     bool loggingEnabled;
     time_t timeOffset; // Moved from main.cpp
 
+    // Helper method to serialize a single record
+    String recordToJson(const Record &r) const
+    {
+        return "{\"start_time\":" + String(r.start_time) +
+               ",\"end_time\":" + String(r.end_time) +
+               ",\"grams\":" + String(r.grams, 2) +
+               ",\"type\":\"" + String(r.type == SIP ? "sip" : r.type == REFILL ? "refill"
+                                                                                : "measurement") +
+               "\"}";
+    }
+
 public:
     DataLogger() : loggingEnabled(true), timeOffset(0) {}
 
@@ -111,24 +122,38 @@ public:
         addRecord(start_time, getCorrectedTime(), amount, REFILL);
     }
 
-    // Utility function for JSON serialization (used by BtServer)
+    // Get a paginated subset of records as JSON
+    String getBufferJsonPaginated(size_t offset, size_t length) const
+    {
+        String json = "{";
+
+        // Add metadata
+        json += "\"total\":" + String(recordBuffer.size()) + ",";
+        json += "\"offset\":" + String(offset) + ",";
+
+        // Calculate actual length (handle bounds)
+        size_t available = recordBuffer.size() > offset ? recordBuffer.size() - offset : 0;
+        size_t actualLength = min(length, available);
+        json += "\"length\":" + String(actualLength) + ",";
+
+        // Add records array
+        json += "\"records\":[";
+
+        for (size_t i = 0; i < actualLength; i++)
+        {
+            if (i > 0)
+                json += ",";
+            json += recordToJson(recordBuffer[offset + i]);
+        }
+
+        json += "]}";
+        return json;
+    }
+
+    // Simplified version that gets all records
     String getBufferJson() const
     {
-        String json = "[";
-        for (size_t i = 0; i < recordBuffer.size(); ++i)
-        {
-            const auto &r = recordBuffer[i];
-            json += "{\"start_time\":" + String(r.start_time) +
-                    ",\"end_time\":" + String(r.end_time) +
-                    ",\"grams\":" + String(r.grams, 2) +
-                    ",\"type\":\"" + String(r.type == SIP ? "sip" : r.type == REFILL ? "refill"
-                                                                                     : "measurement") +
-                    "\"}";
-            if (i < recordBuffer.size() - 1)
-                json += ",";
-        }
-        json += "]";
-        return json;
+        return getBufferJsonPaginated(0, recordBuffer.size());
     }
 };
 

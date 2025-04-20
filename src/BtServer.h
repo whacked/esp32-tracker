@@ -6,6 +6,7 @@
 #include <mutex>
 #include <deque>
 #include "DataLogger.h"
+#include "StatusPrinter.h"
 
 // BLE UUIDs
 #define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -120,8 +121,28 @@ private:
         }
         else if (command == "readBuffer")
         {
-            Serial.println("Sending buffer...");
-            notify(getDataLogger().getBufferJson().c_str());
+            // Parse optional offset and length params: readBuffer [offset] [length]
+            size_t offset = 0;
+            size_t length = 20; // Default page size
+
+            if (!args.isEmpty())
+            {
+                int spaceIdx = args.indexOf(' ');
+                if (spaceIdx == -1)
+                {
+                    // Just offset provided
+                    offset = args.toInt();
+                }
+                else
+                {
+                    // Both offset and length provided
+                    offset = args.substring(0, spaceIdx).toInt();
+                    length = args.substring(spaceIdx + 1).toInt();
+                }
+            }
+
+            Serial.printf("Reading buffer: offset=%d length=%d\n", offset, length);
+            notify(getDataLogger().getBufferJsonPaginated(offset, length).c_str());
         }
         else if (command == "startLogging")
         {
@@ -176,6 +197,40 @@ private:
         {
             Serial.println("Resetting...");
             ESP.restart();
+        }
+        else if (command == "setLogLevel")
+        {
+            int spaceIdx2 = args.indexOf(' ');
+            if (spaceIdx2 == -1)
+            {
+                notify("{\"status\":\"error\",\"message\":\"Invalid format\"}");
+                return;
+            }
+
+            String printer = args.substring(0, spaceIdx2);
+            int level = args.substring(spaceIdx2 + 1).toInt();
+
+            if (printer == "raw")
+            {
+                getRawPrinter().logLevel = level;
+            }
+            else if (printer == "event")
+            {
+                getEventPrinter().logLevel = level;
+            }
+            else if (printer == "status")
+            {
+                getStatusPrinter().logLevel = level;
+            }
+            else
+            {
+                notify("{\"status\":\"error\",\"message\":\"Unknown printer\"}");
+                return;
+            }
+
+            String response = "{\"status\":\"ok\",\"printer\":\"" + printer +
+                              "\",\"level\":" + String(level) + "}";
+            notify(response.c_str());
         }
         else
         {

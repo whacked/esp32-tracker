@@ -25,15 +25,10 @@ HX711 scale;
 
 // Stabilization settings
 #define STABILITY_TOLERANCE 1.0 // in grams
-#define STABILITY_WINDOW 5      // window for stability check
-#define SAMPLING_RATE_MS 25     // sampling period
+#define SAMPLING_RATE_MS 10     // sampling period
 
-// Primary moving average
-#define WINDOW_SIZE 10
-float readings[WINDOW_SIZE];
-int readIndex = 0;
-float total = 0;
-float average = 0;
+#define EMA_ALPHA 0.60f     // Smoothing factor (0 to 1), higher = more responsive
+#define STABILITY_WINDOW 10 // window for stability check
 
 // Secondary window for stability detection
 float stableReadings[STABILITY_WINDOW];
@@ -41,39 +36,55 @@ int stableIndex = 0;
 bool isStable = false;
 
 // Event detection settings
-#define DELTA_THRESHOLD 1.0            // Threshold for detecting rises/drops
-#define CHANGE_DETECTION_THRESHOLD 2.0 // Threshold for confirming sips/refills
-#define DIRECTION_WINDOW 3             // Number of samples to average for direction detection
+#define DELTA_THRESHOLD 1.0             // Threshold for detecting rises/drops
+#define CHANGE_DETECTION_THRESHOLD 2.0f // Threshold for confirming sips/refills
+#define DIRECTION_WINDOW 3              // Number of samples to average for direction detection
+
+#define ZERO_THRESHOLD 1.0f // ≤ this == “nothing on scale”
 
 // State machine
+// Replaces the old enum
 enum EventState
 {
-  STABLE,          // Weight is stable, waiting for changes
-  DROP_DETECTED,   // Initial drop detected, waiting for stabilization
-  DROP_STABILIZED, // Drop has stabilized, waiting for increase
-  RISE_DETECTED,   // Rise detected, waiting for stabilization
-  RISE_STABILIZED  // Rise has stabilized, evaluate event type
+  WAITING,        // Scale has never seen a cup (or was just tared)
+  CUP_ON_STABLE,  // Cup present, weight is stable
+  CUP_OFF_STABLE, // Cup removed, weight ~ 0 g and stable
+  TRANSITION      // Any unstable period between plateaus
 };
 
-EventState eventState = STABLE;
+const char *getStateStr(EventState state)
+{
+  switch (state)
+  {
+  case WAITING:
+    return "waiting";
+  case CUP_ON_STABLE:
+    return "plateau A";
+  case TRANSITION:
+    return "transitioning";
+  case CUP_OFF_STABLE:
+    return "cup off stable";
+  default:
+    return "unknown";
+  }
+}
+
 float baselineWeight = 0;
 float eventStartWeight = 0;
 time_t eventStartTime = 0;
-
-// Direction detection
+bool wasStable = false; // Moved here from loop()
+float lastStableWeight = 0.0f;
+float dropStartWeight = 0.0f;
+float postDropWeight = 0.0f;
+unsigned long dropStartTime = 0;
 float preDropWeight = 0;
-float postDropWeight = 0;
 float directionBuffer[DIRECTION_WINDOW] = {0};
 int directionIndex = 0;
 
-// Sampling rate (shared with BtServer)
-int samplingRateHz = 20;
+float emaValue = 0; // Current EMA value
 
-// Status printers
-StatusPrinter rawPrinter("RAW");
-StatusPrinter eventPrinter("EVENT");
-StatusPrinter statusPrinter("STATUS");
-
+EventState eventState = WAITING;
+EventState prevState = WAITING;
 float getAverageDirection(float currentValue, float baselineValue)
 {
   float currentDelta = currentValue - baselineValue;
@@ -88,6 +99,90 @@ float getAverageDirection(float currentValue, float baselineValue)
   return sum / DIRECTION_WINDOW;
 }
 
+void processStateDetection(float grams, bool isStable, bool wasStable)
+{
+  static float lastCupWeight = 0.0f;    // plateaus with cup on
+  static unsigned long lastCupTime = 0; // when cup was lifted
+
+  switch (eventState)
+  {
+  /* ────────────────────────────────────────────────────
+     Never saw a cup yet.  First stable reading > 1 g
+     becomes our reference weight, but does *not* fire
+     any event. */
+  case WAITING:
+    if (isStable && grams > ZERO_THRESHOLD)
+    {
+      lastCupWeight = grams;
+      eventState = CUP_ON_STABLE;
+      eventPrinter.printfLevel(2, "Cup placed: %.1fg", grams);
+    }
+    break;
+
+  /* ────────────────────────────────────────────────────
+     We’re on a plateau with a cup.  Leaving the plateau
+     (unstable) switches to TRANSITION.  Landing at ~0 g
+     and stable sets CUP_OFF_STABLE. */
+  case CUP_ON_STABLE:
+    if (!isStable && wasStable)
+    {
+      eventState = TRANSITION;
+    }
+    break;
+
+  /* ────────────────────────────────────────────────────
+     Cup was lifted and is off the scale (stable ≤ 1 g).
+     Any unstable reading kicks us to TRANSITION; the
+     *next* stable >1 g is a new cup‑on plateau, where we
+     classify the Δ. */
+  case CUP_OFF_STABLE:
+    if (!isStable && wasStable)
+    {
+      eventState = TRANSITION;
+    }
+    break;
+
+  /* ────────────────────────────────────────────────────
+     Transitional noise (cup being moved).  We only care
+     once stability returns. */
+  case TRANSITION:
+    if (isStable)
+    {
+      if (grams <= ZERO_THRESHOLD)
+      {
+        // Cup just left the scale → CUP_OFF plateau
+        eventState = CUP_OFF_STABLE;
+        lastCupTime = getDataLogger().getCorrectedTime();
+        eventPrinter.printfLevel(2, "Cup removed (%.1fg → 0g)", lastCupWeight);
+      }
+      else
+      {                                      // cup put back
+        float delta = lastCupWeight - grams; // +ve = sip
+        if (fabs(delta) < CHANGE_DETECTION_THRESHOLD)
+        {
+          eventPrinter.printfLevel(1, "No‑op Δ=%.1fg", delta);
+        }
+        else if (delta > 0)
+        {
+          eventPrinter.printfLevel(0, "Sip  %.1fg  (%.1fg → %.1fg)",
+                                   delta, lastCupWeight, grams);
+          getDataLogger().addSip(lastCupTime, delta);
+        }
+        else
+        {
+          eventPrinter.printfLevel(0, "Refill +%.1fg  (%.1fg → %.1fg)",
+                                   -delta, lastCupWeight, grams);
+          getDataLogger().addRefill(lastCupTime, -delta);
+        }
+
+        lastCupWeight = grams; // new baseline
+        eventState = CUP_ON_STABLE;
+      }
+    }
+    break;
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -95,15 +190,9 @@ void setup()
 
   scale.begin(DT, SCK);
 
-  Serial.println("Taring...");
+  statusPrinter.printf("Taring...");
   scale.set_scale();
   scale.tare();
-
-  // Initialize readings array
-  for (int i = 0; i < WINDOW_SIZE; i++)
-  {
-    readings[i] = 0;
-  }
 
   // startup indicator
   for (int i = 0; i < 3; i++)
@@ -115,9 +204,24 @@ void setup()
   }
 
   // Initialize BtServer
+  int samplingRateHz = 1000 / SAMPLING_RATE_MS; // Calculate Hz from ms
+  statusPrinter.printf("starting server");
   btServer = new BtServer(samplingRateHz);
   btServer->setup();
-  Serial.println("Ready!");
+  statusPrinter.printf("Ready!");
+
+  // // DEBUG: add 20 fake measurements
+  // for (int i = 0; i < 20; i++)
+  // {
+  //   if (i % 2 == 0)
+  //   {
+  //     getDataLogger().addMeasurement(100 + i, true);
+  //   }
+  //   else
+  //   {
+  //     getDataLogger().addSip(100 + i, i);
+  //   }
+  // }
 }
 
 bool checkStability(float newValue)
@@ -150,9 +254,11 @@ bool checkStability(float newValue)
 
   float diff = maxVal - minVal;
   bool stable = diff <= STABILITY_TOLERANCE;
-
-  statusPrinter.printf("value=%.1f window=[%.1f %.1f] diff=%.1f -> %s",
-                       newValue, minVal, maxVal, diff, stable ? "stable" : "unstable");
+  statusPrinter.printfLevel(
+      2, "value=%6.1f window=[%6.1f %6.1f] diff=%6.1f -> %s\t|\t%s",
+      newValue, minVal, maxVal, diff,
+      stable ? "stable" : "unstable",
+      getStateStr(eventState)); // ← updated
 
   return stable;
 }
@@ -162,16 +268,28 @@ void loop()
   getBtServer().processCommands();
 
   float rawValue = scale.get_units();
-  rawPrinter.printf("raw=%.1f", rawValue);
+  // rawPrinter.printf("raw=%.1f", rawValue);
 
-  // Calculate weight with moving average
-  total = total - readings[readIndex];
-  readings[readIndex] = rawValue;
-  total = total + readings[readIndex];
-  readIndex = (readIndex + 1) % WINDOW_SIZE;
-  average = total / WINDOW_SIZE;
+  // Calculate weight with exponential moving average
+  if (emaValue == 0)
+  {
+    // Initialize EMA with first reading
+    emaValue = rawValue;
+  }
+  else
+  {
+    // EMA formula: EMAt = α * Xt + (1 - α) * EMAt-1
+    emaValue = EMA_ALPHA * rawValue + (1 - EMA_ALPHA) * emaValue;
+  }
 
-  float grams = map(average, CALIBRATION_AT_NO_LOAD, CALIBRATION_AT_LOAD_1, 0, WEIGHT_AT_LOAD_1);
+  // Original
+  // o3: map(long, … ) in the Arduino core truncates to long, throwing away all sub‑gram precision.
+  // float grams = map(emaValue, CALIBRATION_AT_NO_LOAD, CALIBRATION_AT_LOAD_1, 0, WEIGHT_AT_LOAD_1);
+  float grams =
+      (emaValue - CALIBRATION_AT_NO_LOAD) *
+      (float)WEIGHT_AT_LOAD_1 /
+      (CALIBRATION_AT_LOAD_1 - CALIBRATION_AT_NO_LOAD);
+
   grams = max(0.0f, grams);
 
   // Round very small values to 0 to prevent noise
@@ -183,91 +301,20 @@ void loop()
   // Check stability on grams value after rounding
   isStable = checkStability(grams);
 
-  // State machine logic
-  static bool wasStable = false;
-
-  eventPrinter.printf("grams=%.1f stable=%s state=%d",
-                      grams, isStable ? "true" : "false", eventState);
-
-  switch (eventState)
-  {
-  case STABLE:
-    if (wasStable && !isStable)
-    {
-      float direction = getAverageDirection(grams, baselineWeight);
-      if (direction < -DELTA_THRESHOLD)
-      {
-        preDropWeight = baselineWeight;
-        eventStartTime = getDataLogger().getCorrectedTime();
-        eventState = DROP_DETECTED;
-        eventPrinter.printf("Drop detected: %.1fg → %.1fg", baselineWeight, grams);
-      }
-    }
-    else if (isStable)
-    {
-      baselineWeight = grams;
-    }
-    break;
-
-  case DROP_DETECTED:
-    if (!wasStable && isStable)
-    {
-      postDropWeight = grams;
-      eventState = DROP_STABILIZED;
-      eventPrinter.printf("Drop stabilized at: %.1fg", grams);
-    }
-    break;
-
-  case DROP_STABILIZED:
-    if (wasStable && !isStable)
-    {
-      float direction = getAverageDirection(grams, postDropWeight);
-      if (direction > DELTA_THRESHOLD)
-      {
-        eventState = RISE_DETECTED;
-        eventPrinter.printf("Rise detected: %.1fg → %.1fg", postDropWeight, grams);
-      }
-    }
-    break;
-
-  case RISE_DETECTED:
-    if (!wasStable && isStable)
-    {
-      eventState = RISE_STABILIZED;
-      float postRiseWeight = grams;
-      float weightChange = preDropWeight - postRiseWeight;
-
-      if (abs(weightChange) > CHANGE_DETECTION_THRESHOLD)
-      {
-        if (weightChange > 0)
-        {
-          eventPrinter.printf("Sip confirmed: %.1fg (%.1fg → %.1fg)",
-                              weightChange, preDropWeight, postRiseWeight);
-          getDataLogger().addSip(eventStartTime, weightChange);
-        }
-        else
-        {
-          eventPrinter.printf("Refill detected: %.1fg → %.1fg",
-                              preDropWeight, postRiseWeight);
-          getDataLogger().addRefill(eventStartTime, -weightChange);
-        }
-      }
-      else
-      {
-        eventPrinter.print("False alarm, weight change below threshold");
-      }
-
-      baselineWeight = grams;
-      eventState = STABLE;
-    }
-    break;
-  }
+  // Process the state machine
+  processStateDetection(grams, isStable, wasStable);
 
   // Update stability tracking
   wasStable = isStable;
 
+  if (prevState != eventState)
+  {
+    statusPrinter.printfLevel(2, "*** %s\t→\t%s", getStateStr(prevState), getStateStr(eventState));
+    prevState = eventState;
+  }
+
   // Record the measurement
-  getDataLogger().addMeasurement(grams, isStable);
+  // getDataLogger().addMeasurement(grams, isStable);
 
   // Use task delay instead of blocking delay
   vTaskDelay(pdMS_TO_TICKS(SAMPLING_RATE_MS));

@@ -24,7 +24,12 @@ private:
     }
 
 public:
-    StatusPrinter(const String &printerLabel) : label(printerLabel), lastMessage("") {}
+    int logLevel = 1; // Default to 1
+
+    StatusPrinter(const String &printerLabel, int logLevel = 1) : label(printerLabel), lastMessage(""), logLevel(logLevel)
+    {
+        logLevel = logLevel;
+    }
 
     void print(const String &message)
     {
@@ -48,4 +53,25 @@ public:
         va_end(args);
         print(String(buffer));
     }
+
+    void printfLevel(int level, const char *format, ...)
+    {
+        if (level <= this->logLevel)
+        {
+            va_list args;
+            va_start(args, format);
+            char buf[256];
+            vsnprintf(buf, sizeof(buf), format, args);
+            va_end(args);
+            print(buf);
+        }
+    }
 };
+
+static StatusPrinter rawPrinter("RAW");
+static StatusPrinter eventPrinter("EVENT");
+static StatusPrinter statusPrinter("STATUS");
+
+inline StatusPrinter &getRawPrinter() { return rawPrinter; }
+inline StatusPrinter &getEventPrinter() { return eventPrinter; }
+inline StatusPrinter &getStatusPrinter() { return statusPrinter; }

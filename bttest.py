@@ -35,7 +35,8 @@ async def main():
             try:
                 mixed_payload = json.loads(payload_string)
                 yaml_string = yaml.safe_dump(mixed_payload, default_flow_style=False)
-                print(indent(yaml_string, "+ ").lstrip("+ "))
+                print(f"\n< {len(payload_string)}")
+                print("< " + indent(yaml_string, "+ ").lstrip("+ "))
             except json.JSONDecodeError:
                 print(f"< {payload_string}")
 
