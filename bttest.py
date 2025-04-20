@@ -48,14 +48,10 @@ async def main():
             if not cmd:
                 continue
             if cmd.lower() == "exit":
-                # this has a problem where after we quit
-                # we can no longer reconnect immediately
-                # (maybe a certain wait will work, assuming the server drops the client after idle)
-                # but simply doint client.disconnect() does not fix it
+                await client.stop_notify(TX_UUID)
+                await client.disconnect()
                 break
             await client.write_gatt_char(RX_UUID, (cmd + "\n").encode())
-
-        await client.stop_notify(TX_UUID)
 
 
 if __name__ == "__main__":

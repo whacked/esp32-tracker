@@ -37,7 +37,13 @@ private:
     public:
         ServerCallbacks(BtServer &s) : server(s) {}
         void onConnect(BLEServer *pServer) override { server.deviceConnected = true; }
-        void onDisconnect(BLEServer *pServer) override { server.deviceConnected = false; }
+        void onDisconnect(BLEServer *pServer) override
+        {
+            server.deviceConnected = false;
+            delay(100);                         // brief delay helps stack clean up
+            pServer->getAdvertising()->start(); // RESTART ADVERTISING
+            Serial.println("Disconnected, advertising restarted");
+        }
     };
 
     class CharCallbacks : public BLECharacteristicCallbacks
