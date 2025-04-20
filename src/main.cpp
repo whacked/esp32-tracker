@@ -1,13 +1,10 @@
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 #include <deque>
 #include <mutex>
 #include "HX711.h"
 #include "StatusPrinter.h"
 #include "DataLogger.h"
+#include "BtServer.h"
 
 HX711 scale;
 
@@ -26,20 +23,12 @@ HX711 scale;
 #define WEIGHT_AT_LOAD_1 950          // actual weight in grams
 #endif
 
-// BLE UUIDs
-#define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-#define CHARACTERISTIC_RX "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-#define CHARACTERISTIC_TX "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-
-// timings
-#define SAMPLING_RATE_MS 25
-
 // Stabilization settings
-#define STABILITY_COUNT 3
 #define STABILITY_TOLERANCE 1.0 // in grams
 #define STABILITY_WINDOW 5      // window for stability check
+#define SAMPLING_RATE_MS 25     // sampling period
 
-// Primary moving average (existing)
+// Primary moving average
 #define WINDOW_SIZE 10
 float readings[WINDOW_SIZE];
 int readIndex = 0;
@@ -51,15 +40,12 @@ float stableReadings[STABILITY_WINDOW];
 int stableIndex = 0;
 bool isStable = false;
 
-// Add near the top with other globals
-time_t timeOffset = 0; // Offset in seconds from ESP32's boot time
-
-// Add these with other #defines
+// Event detection settings
 #define DELTA_THRESHOLD 1.0            // Threshold for detecting rises/drops
 #define CHANGE_DETECTION_THRESHOLD 2.0 // Threshold for confirming sips/refills
 #define DIRECTION_WINDOW 3             // Number of samples to average for direction detection
 
-// Update enum to include new state
+// State machine
 enum EventState
 {
   STABLE,          // Weight is stable, waiting for changes
@@ -69,21 +55,25 @@ enum EventState
   RISE_STABILIZED  // Rise has stabilized, evaluate event type
 };
 
-// Add with other globals
 EventState eventState = STABLE;
 float baselineWeight = 0;
 float eventStartWeight = 0;
 time_t eventStartTime = 0;
 
-int samplingRateHz = 20; // default from original delay(25)
-
-// Add these helper variables
+// Direction detection
 float preDropWeight = 0;
 float postDropWeight = 0;
 float directionBuffer[DIRECTION_WINDOW] = {0};
 int directionIndex = 0;
 
-// Helper function to detect direction of change
+// Sampling rate (shared with BtServer)
+int samplingRateHz = 20;
+
+// Status printers
+StatusPrinter rawPrinter("RAW");
+StatusPrinter eventPrinter("EVENT");
+StatusPrinter statusPrinter("STATUS");
+
 float getAverageDirection(float currentValue, float baselineValue)
 {
   float currentDelta = currentValue - baselineValue;
@@ -96,239 +86,6 @@ float getAverageDirection(float currentValue, float baselineValue)
     sum += directionBuffer[i];
   }
   return sum / DIRECTION_WINDOW;
-}
-
-// Update getTimestamp function
-String getTimestamp()
-{
-  time_t now = time(nullptr) + timeOffset; // Add offset to current time
-  struct tm timeinfo;
-  localtime_r(&now, &timeinfo);
-  char timestamp[25];
-  strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S%z", &timeinfo);
-  return String(timestamp);
-}
-
-// Add helper function to get corrected time
-time_t getCorrectedTime()
-{
-  return time(nullptr) + timeOffset;
-}
-
-// BLE characteristics
-BLECharacteristic *pTxCharacteristic;
-bool deviceConnected = false;
-
-// BLE callbacks
-class MyServerCallbacks : public BLEServerCallbacks
-{
-  void onConnect(BLEServer *pServer)
-  {
-    deviceConnected = true;
-  }
-
-  void onDisconnect(BLEServer *pServer)
-  {
-    deviceConnected = false;
-  }
-};
-
-void handleCommand(const String &cmd)
-{
-  Serial.print("Received command: ");
-  Serial.println(cmd);
-
-  int spaceIdx = cmd.indexOf(' ');
-  String command = (spaceIdx == -1) ? cmd : cmd.substring(0, spaceIdx);
-  String args = (spaceIdx == -1) ? "" : cmd.substring(spaceIdx + 1);
-
-  if (command == "getVersion")
-  {
-    String version = "1.0.0";
-    if (deviceConnected)
-    {
-      pTxCharacteristic->setValue(version.c_str());
-      pTxCharacteristic->notify();
-    }
-  }
-  else if (command == "setTime")
-  {
-    // Example: 1234567890 (epoch timestamp)
-    time_t targetTime = args.toInt();
-    if (targetTime > 0)
-    {
-      getDataLogger().setTimeOffset(targetTime - time(nullptr));
-      String response = "{\"status\":\"ok\",\"offset\":" + String(getDataLogger().getTimeOffset()) +
-                        ",\"time\":\"" + getDataLogger().getTimestamp() + "\"}";
-      if (deviceConnected)
-      {
-        pTxCharacteristic->setValue(response.c_str());
-        pTxCharacteristic->notify();
-      }
-    }
-    else
-    {
-      if (deviceConnected)
-      {
-        pTxCharacteristic->setValue("{\"status\":\"error\",\"message\":\"Invalid timestamp\"}");
-        pTxCharacteristic->notify();
-      }
-    }
-  }
-  else if (command == "clearBuffer")
-  {
-    getDataLogger().clearBuffer();
-    Serial.println("Cleared buffer");
-  }
-  else if (command == "readBuffer")
-  {
-    Serial.println("Sending buffer...");
-    String json = getDataLogger().getBufferJson();
-    if (deviceConnected)
-    {
-      pTxCharacteristic->setValue(json.c_str());
-      pTxCharacteristic->notify();
-    }
-  }
-  else if (command == "startLogging")
-  {
-    getDataLogger().setLoggingEnabled(true);
-    Serial.println("Logging enabled");
-  }
-  else if (command == "stopLogging")
-  {
-    getDataLogger().setLoggingEnabled(false);
-    Serial.println("Logging disabled");
-  }
-  else if (command == "getNow")
-  {
-    time_t now = getCorrectedTime();
-    String response = "{\"epoch\":" + String(now) + ",\"local\":\"" + getTimestamp() + "\"}";
-    if (deviceConnected)
-    {
-      pTxCharacteristic->setValue(response.c_str());
-      pTxCharacteristic->notify();
-    }
-  }
-  else if (command == "getStatus")
-  {
-    String status = "{";
-    status += "\"logging\":" + String(getDataLogger().isLoggingEnabled() ? "true" : "false");
-    status += ",\"bufferSize\":" + String(getDataLogger().getBufferSize());
-    status += ",\"rateHz\":" + String(samplingRateHz);
-    status += "}";
-    if (deviceConnected)
-    {
-      pTxCharacteristic->setValue(status.c_str());
-      pTxCharacteristic->notify();
-    }
-  }
-  else if (command == "setSamplingRate")
-  {
-    int rate = args.toInt();
-    if (rate > 0)
-    {
-      samplingRateHz = rate;
-      Serial.print("Sampling rate set to ");
-      Serial.println(rate);
-    }
-  }
-  else if (command == "calibrate")
-  {
-    // Example: -400 998000 950
-    int a, b, c;
-    int parsed = sscanf(args.c_str(), "%d %d %d", &a, &b, &c);
-    if (parsed == 3)
-    {
-      Serial.printf("Calibration set: low=%d, high=%d, weight=%d\n", a, b, c);
-      // TODO: store these and use for grams conversion
-    }
-    else
-    {
-      Serial.println("Invalid calibration args");
-    }
-  }
-  else if (command == "reset")
-  {
-    Serial.println("Resetting...");
-    ESP.restart();
-  }
-  else
-  {
-    if (deviceConnected)
-    {
-      pTxCharacteristic->setValue("Unknown command");
-      pTxCharacteristic->notify();
-    }
-  }
-}
-
-// RX write handler
-// Command buffer
-String incomingBuffer = "";
-
-// Command queue structure to hold both command and its timestamp
-struct QueuedCommand
-{
-  String command;
-  unsigned long timestamp;
-  QueuedCommand(const String &cmd) : command(cmd), timestamp(millis()) {}
-};
-
-std::deque<QueuedCommand> commandQueue;
-std::mutex commandMutex;
-
-class MyCallbacks : public BLECharacteristicCallbacks
-{
-  void onWrite(BLECharacteristic *pCharacteristic) override
-  {
-    std::string rxValue = pCharacteristic->getValue();
-    if (!rxValue.empty())
-    {
-      for (char c : rxValue)
-      {
-        if (c == '\n')
-        {
-          commandMutex.lock();
-          commandQueue.push_back(QueuedCommand(incomingBuffer));
-          commandMutex.unlock();
-          incomingBuffer = "";
-        }
-        else
-        {
-          incomingBuffer += c;
-        }
-      }
-    }
-  }
-};
-
-// Add with other globals
-StatusPrinter rawPrinter("RAW");
-StatusPrinter eventPrinter("EVENT");
-StatusPrinter statusPrinter("STATUS");
-
-void setupBLE()
-{
-  BLEDevice::init("ESP32-Scale");
-  BLEServer *pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  pTxCharacteristic = pService->createCharacteristic(
-      CHARACTERISTIC_TX,
-      BLECharacteristic::PROPERTY_NOTIFY);
-  pTxCharacteristic->addDescriptor(new BLE2902());
-
-  BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
-      CHARACTERISTIC_RX,
-      BLECharacteristic::PROPERTY_WRITE);
-  pRxCharacteristic->setCallbacks(new MyCallbacks());
-
-  pService->start();
-  pServer->getAdvertising()->start();
-  Serial.println("BLE UART started, waiting for connections...");
 }
 
 void setup()
@@ -357,7 +114,9 @@ void setup()
     delay(100);
   }
 
-  setupBLE();
+  // Initialize BtServer
+  btServer = new BtServer(samplingRateHz);
+  btServer->setup();
   Serial.println("Ready!");
 }
 
@@ -400,26 +159,7 @@ bool checkStability(float newValue)
 
 void loop()
 {
-  // Process any pending commands first
-  while (!commandQueue.empty())
-  {
-    commandMutex.lock();
-    QueuedCommand cmd = commandQueue.front();
-    commandQueue.pop_front();
-    commandMutex.unlock();
-
-    // If command is too old, skip it (optional, for debugging)
-    if (millis() - cmd.timestamp > 1000)
-    {
-      Serial.println("Warning: Dropped old command");
-      continue;
-    }
-
-    handleCommand(cmd.command);
-
-    // Force a small delay after each command to ensure BLE stack processes the notification
-    vTaskDelay(1); // Yield to BLE stack
-  }
+  getBtServer().processCommands();
 
   float rawValue = scale.get_units();
   rawPrinter.printf("raw=%.1f", rawValue);
@@ -430,8 +170,6 @@ void loop()
   total = total + readings[readIndex];
   readIndex = (readIndex + 1) % WINDOW_SIZE;
   average = total / WINDOW_SIZE;
-
-  // statusPrinter.printf("average=%.1f", average);
 
   float grams = map(average, CALIBRATION_AT_NO_LOAD, CALIBRATION_AT_LOAD_1, 0, WEIGHT_AT_LOAD_1);
   grams = max(0.0f, grams);
@@ -460,14 +198,14 @@ void loop()
       if (direction < -DELTA_THRESHOLD)
       {
         preDropWeight = baselineWeight;
-        eventStartTime = getCorrectedTime();
+        eventStartTime = getDataLogger().getCorrectedTime();
         eventState = DROP_DETECTED;
         eventPrinter.printf("Drop detected: %.1fg → %.1fg", baselineWeight, grams);
       }
     }
     else if (isStable)
     {
-      baselineWeight = grams; // Update baseline while stable
+      baselineWeight = grams;
     }
     break;
 
