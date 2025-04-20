@@ -232,6 +232,25 @@ private:
                               "\",\"level\":" + String(level) + "}";
             notify(response.c_str());
         }
+        else if (command == "dropRecords")
+        {
+            // Parse offset and length params: dropRecords <offset> <length>
+            int spaceIdx = args.indexOf(' ');
+            if (spaceIdx == -1)
+            {
+                notify("{\"status\":\"error\",\"message\":\"Invalid format\"}");
+                return;
+            }
+
+            size_t offset = args.substring(0, spaceIdx).toInt();
+            size_t length = args.substring(spaceIdx + 1).toInt();
+
+            bool success = getDataLogger().dropRecords(offset, length);
+            String response = "{\"status\":\"" + String(success ? "ok" : "error") +
+                              "\",\"offset\":" + String(offset) +
+                              ",\"length\":" + String(length) + "}";
+            notify(response.c_str());
+        }
         else
         {
             notify("Unknown command");

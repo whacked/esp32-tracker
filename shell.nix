@@ -27,6 +27,7 @@ in pkgs.mkShell {
     pkgs.pkg-config
     pkgs.arrow-cpp          # C++ Arrow library
     pkgs.fast-float
+    pkgs.rlwrap
   ] ++ (with pkgs; [
     gnumake
     gcc
@@ -42,6 +43,8 @@ in pkgs.mkShell {
       pip install bleak
     }
     ensure-venv _setup-venv
+
+    alias bt="rlwrap python bttest.py"
   '' + ''
     echo-shortcuts ${__curPos.file}
   '';  # join strings with +

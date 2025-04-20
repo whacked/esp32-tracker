@@ -155,6 +155,27 @@ public:
     {
         return getBufferJsonPaginated(0, recordBuffer.size());
     }
+
+    // Drop a range of records from the buffer
+    bool dropRecords(size_t offset, size_t length)
+    {
+        if (offset >= recordBuffer.size())
+        {
+            return false;
+        }
+
+        // Calculate actual number of records we can drop
+        size_t available = recordBuffer.size() - offset;
+        size_t actualLength = min(length, available);
+
+        // Create iterators for the range to remove
+        auto start = recordBuffer.begin() + offset;
+        auto end = start + actualLength;
+
+        // Remove the records
+        recordBuffer.erase(start, end);
+        return true;
+    }
 };
 
 // Global instance
