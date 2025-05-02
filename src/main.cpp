@@ -40,34 +40,26 @@ bool isStable = false;
 #define CHANGE_DETECTION_THRESHOLD 2.0f // Threshold for confirming sips/refills
 #define DIRECTION_WINDOW 3              // Number of samples to average for direction detection
 
-#define ZERO_THRESHOLD 1.0f // ≤ this == “nothing on scale”
+#define ZERO_THRESHOLD 1.0f // ≤ this == "nothing on scale"
 
 // State machine
-// Replaces the old enum
-enum EventState
+
+// ─────────── Plateau-based state machine ────────────
+enum PlateauState
 {
-  WAITING,        // Scale has never seen a cup (or was just tared)
-  CUP_ON_STABLE,  // Cup present, weight is stable
-  CUP_OFF_STABLE, // Cup removed, weight ~ 0 g and stable
-  TRANSITION      // Any unstable period between plateaus
+  EMPTY,
+  PLATEAU
 };
 
-const char *getStateStr(EventState state)
+const char *stateName(PlateauState s)
 {
-  switch (state)
-  {
-  case WAITING:
-    return "waiting";
-  case CUP_ON_STABLE:
-    return "plateau A";
-  case TRANSITION:
-    return "transitioning";
-  case CUP_OFF_STABLE:
-    return "cup off stable";
-  default:
-    return "unknown";
-  }
+  return s == EMPTY ? "empty" : "plateau";
 }
+
+PlateauState plateauState = EMPTY;
+PlateauState prevPlateauState = EMPTY;
+float prevPlateauWeight = 0.0f;
+unsigned long plateauStartTime = 0; // first sample in this plateau
 
 float baselineWeight = 0;
 float eventStartWeight = 0;
@@ -83,8 +75,6 @@ int directionIndex = 0;
 
 float emaValue = 0; // Current EMA value
 
-EventState eventState = WAITING;
-EventState prevState = WAITING;
 float getAverageDirection(float currentValue, float baselineValue)
 {
   float currentDelta = currentValue - baselineValue;
@@ -99,87 +89,111 @@ float getAverageDirection(float currentValue, float baselineValue)
   return sum / DIRECTION_WINDOW;
 }
 
-void processStateDetection(float grams, bool isStable, bool wasStable)
+void processPlateauDetection(float grams, bool isStable)
 {
-  static float lastCupWeight = 0.0f;    // plateaus with cup on
-  static unsigned long lastCupTime = 0; // when cup was lifted
+  /* -------- persistent state -------- */
+  static PlateauState state = EMPTY;
+  static float prevPlateau = 0.0f;      // last stable weight (>0 g)
+  static float weightBeforeLift = 0.0f; // plateau right before cup removal
+  static unsigned long liftTime = 0;    // when the cup was lifted
+  static bool waitingReplace = false;   // TRUE after a lift, until cup back
+  static bool plateauAnnounce = false;  // verbose once per plateau
 
-  switch (eventState)
+  unsigned long now = getDataLogger().getCorrectedTime();
+
+  /* Ignore during instability ----------------------------------- */
+  if (!isStable)
   {
-  /* ────────────────────────────────────────────────────
-     Never saw a cup yet.  First stable reading > 1 g
-     becomes our reference weight, but does *not* fire
-     any event. */
-  case WAITING:
-    if (isStable && grams > ZERO_THRESHOLD)
-    {
-      lastCupWeight = grams;
-      eventState = CUP_ON_STABLE;
-      eventPrinter.printfLevel(2, "Cup placed: %.1fg", grams);
-    }
-    break;
+    plateauAnnounce = false;
+    return;
+  }
 
-  /* ────────────────────────────────────────────────────
-     We’re on a plateau with a cup.  Leaving the plateau
-     (unstable) switches to TRANSITION.  Landing at ~0 g
-     and stable sets CUP_OFF_STABLE. */
-  case CUP_ON_STABLE:
-    if (!isStable && wasStable)
-    {
-      eventState = TRANSITION;
-    }
-    break;
+  /* Optional verbose trace of plateaus (statusPrinter, not events) */
+  if (!plateauAnnounce)
+  {
+    statusPrinter.printfLevel(3, "plateau %.1fg (%s)",
+                              grams,
+                              state == EMPTY ? "empty" : "cup on");
+    plateauAnnounce = true;
+  }
 
-  /* ────────────────────────────────────────────────────
-     Cup was lifted and is off the scale (stable ≤ 1 g).
-     Any unstable reading kicks us to TRANSITION; the
-     *next* stable >1 g is a new cup‑on plateau, where we
-     classify the Δ. */
-  case CUP_OFF_STABLE:
-    if (!isStable && wasStable)
-    {
-      eventState = TRANSITION;
-    }
-    break;
+  /* Insignificant jitter that still passes stability test? */
+  if (fabs(grams - prevPlateau) < CHANGE_DETECTION_THRESHOLD &&
+      !(state == EMPTY && grams > ZERO_THRESHOLD))
+  { // allow EMPTY→cup placed
+    return;
+  }
 
-  /* ────────────────────────────────────────────────────
-     Transitional noise (cup being moved).  We only care
-     once stability returns. */
-  case TRANSITION:
-    if (isStable)
-    {
-      if (grams <= ZERO_THRESHOLD)
+  /* ─── Cup REMOVED  (stable ~0 g) ─────────────────────────────── */
+  if (grams <= ZERO_THRESHOLD)
+  {
+    if (state == PLATEAU)
+    { // cup was present and lifted just now
+      eventPrinter.printfLevel(2, "Cup removed (%.1fg → 0g)", prevPlateau);
+      weightBeforeLift = prevPlateau;
+      liftTime = now;
+      waitingReplace = true;
+    }
+    state = EMPTY;
+    prevPlateau = 0.0f;
+    return;
+  }
+
+  /* ─── Cup PLACED / plateau >0 g  ─────────────────────────────── */
+  if (state == EMPTY)
+  {
+    if (waitingReplace)
+    {                                         // we just returned after a lift
+      float delta = weightBeforeLift - grams; // +ve = sip
+      if (fabs(delta) >= CHANGE_DETECTION_THRESHOLD)
       {
-        // Cup just left the scale → CUP_OFF plateau
-        eventState = CUP_OFF_STABLE;
-        lastCupTime = getDataLogger().getCorrectedTime();
-        eventPrinter.printfLevel(2, "Cup removed (%.1fg → 0g)", lastCupWeight);
-      }
-      else
-      {                                      // cup put back
-        float delta = lastCupWeight - grams; // +ve = sip
-        if (fabs(delta) < CHANGE_DETECTION_THRESHOLD)
+        if (delta > 0)
         {
-          eventPrinter.printfLevel(1, "No‑op Δ=%.1fg", delta);
-        }
-        else if (delta > 0)
-        {
-          eventPrinter.printfLevel(0, "Sip  %.1fg  (%.1fg → %.1fg)",
-                                   delta, lastCupWeight, grams);
-          getDataLogger().addSip(lastCupTime, delta);
+          eventPrinter.printfLevel(0, "Sip    %.1fg  (%.1fg → %.1fg)",
+                                   delta, weightBeforeLift, grams);
+          getDataLogger().addSip(liftTime, delta);
         }
         else
         {
-          eventPrinter.printfLevel(0, "Refill +%.1fg  (%.1fg → %.1fg)",
-                                   -delta, lastCupWeight, grams);
-          getDataLogger().addRefill(lastCupTime, -delta);
+          eventPrinter.printfLevel(0, "Refill +%.1fg (%.1fg → %.1fg)",
+                                   -delta, weightBeforeLift, grams);
+          getDataLogger().addRefill(liftTime, -delta);
         }
-
-        lastCupWeight = grams; // new baseline
-        eventState = CUP_ON_STABLE;
       }
+      else
+      {
+        eventPrinter.printfLevel(1, "No‑op Δ=%.1fg", delta);
+      }
+      waitingReplace = false;
     }
-    break;
+    else
+    {
+      /* first‑ever cup placement */
+      eventPrinter.printfLevel(2, "Cup placed: %.1fg", grams);
+    }
+
+    state = PLATEAU;
+    prevPlateau = grams;
+    return;
+  }
+
+  /* ─── Weight changed while cup stayed on the scale (straw etc.) */
+  float delta = prevPlateau - grams; // +ve = sip
+  if (fabs(delta) >= CHANGE_DETECTION_THRESHOLD)
+  {
+    if (delta > 0)
+    {
+      eventPrinter.printfLevel(0, "Sip    %.1fg (%.1fg → %.1fg)",
+                               delta, prevPlateau, grams);
+      getDataLogger().addSip(now, delta);
+    }
+    else
+    {
+      eventPrinter.printfLevel(0, "Refill +%.1fg (%.1fg → %.1fg)",
+                               -delta, prevPlateau, grams);
+      getDataLogger().addRefill(now, -delta);
+    }
+    prevPlateau = grams;
   }
 }
 
@@ -258,7 +272,7 @@ bool checkStability(float newValue)
       2, "value=%6.1f window=[%6.1f %6.1f] diff=%6.1f -> %s\t|\t%s",
       newValue, minVal, maxVal, diff,
       stable ? "stable" : "unstable",
-      getStateStr(eventState)); // ← updated
+      stateName(plateauState));
 
   return stable;
 }
@@ -283,8 +297,8 @@ void loop()
   }
 
   // Original
-  // o3: map(long, … ) in the Arduino core truncates to long, throwing away all sub‑gram precision.
-  // float grams = map(emaValue, CALIBRATION_AT_NO_LOAD, CALIBRATION_AT_LOAD_1, 0, WEIGHT_AT_LOAD_1);
+  // o3: map(long, … ) in the Arduino core truncates to long, throwing away all sub-gram precision.
+  // float grams = map(long, … ) in the Arduino core truncates to long, throwing away all sub‑gram precision.
   float grams =
       (emaValue - CALIBRATION_AT_NO_LOAD) *
       (float)WEIGHT_AT_LOAD_1 /
@@ -302,15 +316,16 @@ void loop()
   isStable = checkStability(grams);
 
   // Process the state machine
-  processStateDetection(grams, isStable, wasStable);
+  processPlateauDetection(grams, isStable);
 
   // Update stability tracking
   wasStable = isStable;
 
-  if (prevState != eventState)
+  // Fix state transition logging
+  if (prevPlateauState != plateauState)
   {
-    statusPrinter.printfLevel(2, "*** %s\t→\t%s", getStateStr(prevState), getStateStr(eventState));
-    prevState = eventState;
+    statusPrinter.printfLevel(2, "*** %s\t→\t%s", stateName(prevPlateauState), stateName(plateauState));
+    prevPlateauState = plateauState;
   }
 
   // Record the measurement
