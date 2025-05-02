@@ -21,6 +21,7 @@ in pkgs.mkShell {
     pythonPackages.numpy
     pythonPackages.matplotlib
     pythonPackages.pandas
+    pythonPackages.pyaml
     pythonPackages.polars
     pythonPackages.psutil
     pkgs.mdsh
