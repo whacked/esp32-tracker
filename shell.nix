@@ -29,6 +29,7 @@ in pkgs.mkShell {
     pkgs.arrow-cpp          # C++ Arrow library
     pkgs.fast-float
     pkgs.rlwrap
+    pkgs.babashka
   ] ++ (with pkgs; [
     gnumake
     gcc
