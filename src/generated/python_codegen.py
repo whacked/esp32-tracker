@@ -1,6 +1,6 @@
 # AUTO-GENERATED FILE. DO NOT EDIT.
 
-from typing import Any
+from typing import Any, List, TypedDict
 
 from enum import Enum
 
@@ -20,49 +20,97 @@ class Command(Enum):
     DROP_RECORDS = "dropRecords"
     UNKNOWN = "unknown"
 
+class SetTimeResponse(TypedDict):
+    status: str
+    offset: int
+    time: str
+
+
+class ReadBufferResponse(TypedDict):
+    records: List[Any]
+    length: int
+
+
+class GetNowResponse(TypedDict):
+    epoch: int
+    local: str
+
+
+class GetStatusResponse(TypedDict):
+    logging: bool
+    bufferSize: int
+    rateHz: int
+
+
+class SetLogLevelResponse(TypedDict):
+    status: str
+    printer: str
+    level: int
+
+
+class DropRecordsResponse(TypedDict):
+    status: str
+    offset: int
+    length: int
+
 class BaseCommandHandler:
-    def getVersion(self):
-        """Get firmware version (string)"""
+    async def getVersion(self) -> str:
+        """Get firmware version (string)
+
+Returns:
+    str"""
         pass
 
-    def setTime(self, epoch):
+    async def setTime(self, epoch) -> SetTimeResponse:
         """Set device time to given epoch
 
 Args:
     epoch (int): Unix epoch seconds
-"""
+
+
+Returns:
+    SetTimeResponse"""
         pass
 
-    def clearBuffer(self):
+    async def clearBuffer(self) -> None:
         """Clear the data buffer"""
         pass
 
-    def readBuffer(self, offset, length):
+    async def readBuffer(self, offset, length) -> ReadBufferResponse:
         """Read paginated buffer
 
 Args:
     offset (int): Start index
     length (int): Number of records
-"""
+
+
+Returns:
+    ReadBufferResponse"""
         pass
 
-    def startLogging(self):
+    async def startLogging(self) -> None:
         """Enable logging"""
         pass
 
-    def stopLogging(self):
+    async def stopLogging(self) -> None:
         """Disable logging"""
         pass
 
-    def getNow(self):
-        """Get current device time"""
+    async def getNow(self) -> GetNowResponse:
+        """Get current device time
+
+Returns:
+    GetNowResponse"""
         pass
 
-    def getStatus(self):
-        """Get device status"""
+    async def getStatus(self) -> GetStatusResponse:
+        """Get device status
+
+Returns:
+    GetStatusResponse"""
         pass
 
-    def setSamplingRate(self, rate):
+    async def setSamplingRate(self, rate) -> None:
         """Set sampling rate
 
 Args:
@@ -70,7 +118,7 @@ Args:
 """
         pass
 
-    def calibrate(self, low, high, weight):
+    async def calibrate(self, low, high, weight) -> None:
         """Calibrate the scale
 
 Args:
@@ -80,30 +128,39 @@ Args:
 """
         pass
 
-    def reset(self):
+    async def reset(self) -> None:
         """Reset the device"""
         pass
 
-    def setLogLevel(self, printer, level):
+    async def setLogLevel(self, printer, level) -> SetLogLevelResponse:
         """Set log level for a printer
 
 Args:
     printer (str): Printer name (raw/event/status)
     level (int): Log level
-"""
+
+
+Returns:
+    SetLogLevelResponse"""
         pass
 
-    def dropRecords(self, offset, length):
+    async def dropRecords(self, offset, length) -> DropRecordsResponse:
         """Drop records from buffer
 
 Args:
     offset (int): Start index
     length (int): Number of records
-"""
+
+
+Returns:
+    DropRecordsResponse"""
         pass
 
-    def unknown(self):
-        """Unknown command (error)"""
+    async def unknown(self) -> str:
+        """Unknown command (error)
+
+Returns:
+    str"""
         pass
 
 
