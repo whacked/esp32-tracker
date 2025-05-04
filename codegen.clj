@@ -355,20 +355,55 @@
     acc
     commands)))
 
+(def cpp-json-escape-fn
+  (slurp "src/util.cpp"))
+
+(defn emit-cpp-tojson [class-name schema class-map]
+  (let [fields (rest schema)]
+    (str "inline std::string " class-name "ToJson(const " class-name "& r) {\n"
+         "    return std::string(\"{\") +\n"
+         (clojure.string/join " +\n"
+           (map-indexed
+            (fn [i [k v]]
+              (let [comma (if (zero? i) "" ",")
+                    field (name k)
+                    key (str "\\\"" field "\\\":")
+                    value-expr
+                    (cond
+                      (or (= v 'string?) (= v string?))
+                      (str "json_escape(r." field ")")
+                      (or (= v 'int?) (= v int?) (= v 'float?) (= v float?))
+                      (str "std::to_string(r." field ")")
+                      (or (= v 'boolean?) (= v boolean?))
+                      (str "(r." field " ? \"true\" : \"false\")")
+                      (and (vector? v) (= (first v) :map))
+                      (str (class-map v) "ToJson(r." field ")")
+                      (and (vector? v) (= (first v) :sequential))
+                      (str "\"[\" /* TODO: join elements of r." field " */ \"]\"")
+                      :else "\"null\"")]
+                (str "        \"" comma key "\" + " value-expr)))
+            fields))
+         " + \"}\";\n"
+         "}\n\n")))
+
+
+
 (defn emit-cpp-header-file [commands out-path]
   (let [class-map (collect-cpp-structs commands)
-        struct-defs (->> class-map
-                         (map (fn [[schema class-name]]
-                                (emit-cpp-struct class-name schema class-map)))
-                         (clojure.string/join "\n"))]
+        struct-and-tojson-defs (->> class-map
+                                    (map (fn [[schema class-name]]
+                                           (str (emit-cpp-struct class-name schema class-map)
+                                                (emit-cpp-tojson class-name schema class-map))))
+                                    (clojure.string/join "\n"))]
     (with-open [w (io/writer out-path)]
       (.write w "// AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
       (.write w "#pragma once\n")
       (.write w "#include <string>\n#include <vector>\n\n")
+      (.write w cpp-json-escape-fn)
       (.write w (emit-cpp-enum commands))
       (.write w (emit-cpp-constants commands))
       (.write w "\n")
-      (.write w struct-defs))))
+      (.write w struct-and-tojson-defs))))
 
 (let [output-file-path (last *command-line-args*)]
   (cond
