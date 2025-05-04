@@ -7,6 +7,8 @@
 #include <deque>
 #include "DataLogger.h"
 #include "StatusPrinter.h"
+#include "generated/cpp_bt_commands_codegen.h"
+#include <build_metadata.h>
 
 // BLE UUIDs
 #define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -94,11 +96,11 @@ private:
         String command = (spaceIdx == -1) ? cmd : cmd.substring(0, spaceIdx);
         String args = (spaceIdx == -1) ? "" : cmd.substring(spaceIdx + 1);
 
-        if (command == "getVersion")
+        if (command == CMD_GETVERSION)
         {
-            notify("1.0.0");
+            notify(("0.0." + String(BUILD_NUMBER)).c_str());
         }
-        else if (command == "setTime")
+        else if (command == CMD_SETTIME)
         {
             time_t targetTime = args.toInt();
             if (targetTime > 0)
@@ -114,12 +116,12 @@ private:
                 notify("{\"status\":\"error\",\"message\":\"Invalid timestamp\"}");
             }
         }
-        else if (command == "clearBuffer")
+        else if (command == CMD_CLEARBUFFER)
         {
             getDataLogger().clearBuffer();
             Serial.println("Cleared buffer");
         }
-        else if (command == "readBuffer")
+        else if (command == CMD_READBUFFER)
         {
             // Parse optional offset and length params: readBuffer [offset] [length]
             size_t offset = 0;
@@ -144,23 +146,23 @@ private:
             Serial.printf("Reading buffer: offset=%d length=%d\n", offset, length);
             notify(getDataLogger().getBufferJsonPaginated(offset, length).c_str());
         }
-        else if (command == "startLogging")
+        else if (command == CMD_STARTLOGGING)
         {
             getDataLogger().setLoggingEnabled(true);
             Serial.println("Logging enabled");
         }
-        else if (command == "stopLogging")
+        else if (command == CMD_STOPLOGGING)
         {
             getDataLogger().setLoggingEnabled(false);
             Serial.println("Logging disabled");
         }
-        else if (command == "getNow")
+        else if (command == CMD_GETNOW)
         {
             String response = "{\"epoch\":" + String(getDataLogger().getCorrectedTime()) +
                               ",\"local\":\"" + getDataLogger().getTimestamp() + "\"}";
             notify(response.c_str());
         }
-        else if (command == "getStatus")
+        else if (command == CMD_GETSTATUS)
         {
             String status = "{";
             status += "\"logging\":" + String(getDataLogger().isLoggingEnabled() ? "true" : "false");
@@ -169,7 +171,7 @@ private:
             status += "}";
             notify(status.c_str());
         }
-        else if (command == "setSamplingRate")
+        else if (command == CMD_SETSAMPLINGRATE)
         {
             int rate = args.toInt();
             if (rate > 0)
@@ -179,7 +181,7 @@ private:
                 Serial.println(rate);
             }
         }
-        else if (command == "calibrate")
+        else if (command == CMD_CALIBRATE)
         {
             int a, b, c;
             int parsed = sscanf(args.c_str(), "%d %d %d", &a, &b, &c);
@@ -193,12 +195,12 @@ private:
                 Serial.println("Invalid calibration args");
             }
         }
-        else if (command == "reset")
+        else if (command == CMD_RESET)
         {
             Serial.println("Resetting...");
             ESP.restart();
         }
-        else if (command == "setLogLevel")
+        else if (command == CMD_SETLOGLEVEL)
         {
             int spaceIdx2 = args.indexOf(' ');
             if (spaceIdx2 == -1)
@@ -232,7 +234,7 @@ private:
                               "\",\"level\":" + String(level) + "}";
             notify(response.c_str());
         }
-        else if (command == "dropRecords")
+        else if (command == CMD_DROPRECORDS)
         {
             // Parse offset and length params: dropRecords <offset> <length>
             int spaceIdx = args.indexOf(' ');

@@ -3,6 +3,37 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <time.h>
+
+enum RecordType {
+    MEASUREMENT,
+    SIP,
+    REFILL,
+};
+
+inline const char* RecordTypeToString(RecordType t) {
+    switch (t) {
+        case MEASUREMENT: return "measurement";
+        case SIP: return "sip";
+        case REFILL: return "refill";
+        default: return "unknown";
+    }
+}
+
+struct Record {
+    time_t start_time;
+    time_t end_time;
+    float grams;
+    RecordType type;
+};
+
+inline std::string RecordToJson(const Record& r) {
+    return std::string("{") +
+        "\"start_time\":" + std::to_string(r.start_time) +
+        ",\"end_time\":" + std::to_string(r.end_time) +
+        ",\"grams\":" + std::to_string(r.grams) +
+        ",\"type\":" + RecordTypeToString(r.type) + "}";
+}
 
 #include <string>
 #include <cstdio>
@@ -97,14 +128,38 @@ inline std::string SetTimeResponseToJson(const SetTimeResponse& r) {
 }
 
 
+struct ReadBufferResponseRecordsItem {
+    time_t start_time;
+    time_t end_time;
+    float grams;
+    RecordType type;
+};
+
+inline std::string ReadBufferResponseRecordsItemToJson(const ReadBufferResponseRecordsItem& r) {
+    return std::string("{") +
+        "\"start_time\":" + std::to_string(r.start_time) +
+        ",\"end_time\":" + std::to_string(r.end_time) +
+        ",\"grams\":" + std::to_string(r.grams) +
+        ",\"type\":" + RecordTypeToString(r.type) + "}";
+}
+
+
 struct ReadBufferResponse {
-    std::vector</*UnknownType*/> records;
+    std::vector<ReadBufferResponseRecordsItem> records;
     int length;
 };
 
 inline std::string ReadBufferResponseToJson(const ReadBufferResponse& r) {
     return std::string("{") +
-        "\"records\":" + "[" /* TODO: join elements of r.records */ "]" +
+        "\"records\":" + "[" +
+        [&](){
+            std::string arr;
+            for (size_t i = 0; i < r.records.size(); ++i) {
+                if (i > 0) arr += ",";
+                arr += ReadBufferResponseRecordsItemToJson(r.records[i]);
+            }
+            return arr;
+        }() + "]" +
         ",\"length\":" + std::to_string(r.length) + "}";
 }
 

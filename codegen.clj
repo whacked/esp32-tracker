@@ -7,6 +7,18 @@
 (require '[clojure.pprint :as pprint])
 (require '[clojure.java.io :as io])
 
+(def RecordType
+  [:enum :measurement :sip :refill])
+
+(def EpochTime (fn [x] (int? x)))
+
+(def Record
+  [:map
+   [:start_time EpochTime]
+   [:end_time EpochTime]
+   [:grams float?]
+   [:type RecordType]])
+
 (def CommandArg
   [:map
    [:name [:or keyword? string?]]
@@ -47,7 +59,7 @@
     :args [{:name "offset" :type int? :default 0 :doc "Start index"}
            {:name "length" :type int? :default 20 :doc "Number of records"}]
     :response [:map
-               [:records [:sequential any?]]
+               [:records [:sequential Record]]
                [:length int?]]
     :doc "Read paginated buffer"}
 
@@ -285,13 +297,23 @@
         (.write w (emit-python-spec-entry cmd)))
       (.write w "}\n"))))
 
+(def cpp-type-map
+  {string? "std::string"
+   int? "int"
+   float? "float"
+   boolean? "bool"
+   'string? "std::string"
+   'int? "int"
+   'float? "float"
+   'boolean? "bool"
+   RecordType "RecordType"
+   EpochTime "time_t"})
+
 (defn cpp-type [clj-type]
   (cond
-    (or (= clj-type 'string?) (= clj-type string?)) "std::string"
-    (or (= clj-type 'int?) (= clj-type int?)) "int"
-    (or (= clj-type 'float?) (= clj-type float?)) "float"
-    (or (= clj-type 'boolean?) (= clj-type boolean?)) "bool"
-    :else "/*UnknownType*/"))
+    (and (vector? clj-type) (= (first clj-type) :enum))
+    "RecordType" ; or dynamically (name of the enum)
+    :else (get cpp-type-map clj-type)))
 
 (defn cpp-struct-name [command-name suffix]
   (str (capitalize-first-char command-name) suffix))
@@ -358,6 +380,19 @@
 (def cpp-json-escape-fn
   (slurp "src/util.cpp"))
 
+(defn emit-cpp-json-array [field-name item-type]
+  (str
+    "\"[\" +\n"
+    "        [&](){\n"
+    "            std::string arr;\n"
+    "            for (size_t i = 0; i < r." field-name ".size(); ++i) {\n"
+    "                if (i > 0) arr += \",\";\n"
+    "                arr += " item-type "ToJson(r." field-name "[i]);\n"
+    "            }\n"
+    "            return arr;\n"
+    "        }() + \"]\""))
+
+;; Update this function:
 (defn emit-cpp-tojson [class-name schema class-map]
   (let [fields (rest schema)]
     (str "inline std::string " class-name "ToJson(const " class-name "& r) {\n"
@@ -372,33 +407,85 @@
                     (cond
                       (or (= v 'string?) (= v string?))
                       (str "json_escape(r." field ")")
+
                       (or (= v 'int?) (= v int?) (= v 'float?) (= v float?))
                       (str "std::to_string(r." field ")")
+
                       (or (= v 'boolean?) (= v boolean?))
                       (str "(r." field " ? \"true\" : \"false\")")
+
                       (and (vector? v) (= (first v) :map))
                       (str (class-map v) "ToJson(r." field ")")
+
                       (and (vector? v) (= (first v) :sequential))
-                      (str "\"[\" /* TODO: join elements of r." field " */ \"]\"")
+                      (let [item-type (if (and (vector? (second v)) (= (first (second v)) :map))
+                                        (class-map (second v))
+                                        (cpp-type (second v)))]
+                        (emit-cpp-json-array field item-type))
+
+                      (= v EpochTime)
+                      (str "std::to_string(r." field ")")
+
+                      (= v RecordType)
+                      (str "RecordTypeToString(r." field ")")
+
                       :else "\"null\"")]
                 (str "        \"" comma key "\" + " value-expr)))
             fields))
          " + \"}\";\n"
          "}\n\n")))
 
+(defn emit-cpp-enum-from-malli [enum-name malli-def]
+  (let [[_ & values] malli-def]
+    (str "enum " enum-name " {\n"
+         (apply str
+                (map (fn [v]
+                       (str "    " (clojure.string/upper-case (name v)) ",\n"))
+                     values))
+         "};\n\n")))
 
+(defn emit-cpp-struct-from-malli [struct-name malli-def type-map]
+  (let [[_ & fields] malli-def]
+    (str "struct " struct-name " {\n"
+         (apply str
+                (map (fn [[k v]]
+                       (str "    " (or (type-map v)
+                                       (if (and (vector? v) (= (first v) :enum))
+                                         (name k) ; fallback for unknown type
+                                         "/*UnknownType*/"))
+                            " " (name k) ";\n"))
+                     fields))
+         "};\n\n")))
+
+(defn emit-cpp-enum-to-string-fn [enum-name malli-def]
+  (let [[_ & values] malli-def]
+    (str "inline const char* " enum-name "ToString(" enum-name " t) {\n"
+         "    switch (t) {\n"
+         (apply str
+                (map (fn [v]
+                       (str "        case " (clojure.string/upper-case (name v))
+                            ": return \"" (name v) "\";\n"))
+                     values))
+         "        default: return \"unknown\";\n"
+         "    }\n"
+         "}\n\n")))
 
 (defn emit-cpp-header-file [commands out-path]
   (let [class-map (collect-cpp-structs commands)
         struct-and-tojson-defs (->> class-map
                                     (map (fn [[schema class-name]]
                                            (str (emit-cpp-struct class-name schema class-map)
-                                                (emit-cpp-tojson class-name schema class-map))))
+                                                (emit-cpp-tojson class-name schema class-map)))
+                                    )
                                     (clojure.string/join "\n"))]
     (with-open [w (io/writer out-path)]
       (.write w "// AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
       (.write w "#pragma once\n")
-      (.write w "#include <string>\n#include <vector>\n\n")
+      (.write w "#include <string>\n#include <vector>\n#include <time.h>\n\n")
+      (.write w (emit-cpp-enum-from-malli "RecordType" RecordType))
+      (.write w (emit-cpp-enum-to-string-fn "RecordType" RecordType))
+      (.write w (emit-cpp-struct-from-malli "Record" Record cpp-type-map))
+      (.write w (emit-cpp-tojson "Record" Record cpp-type-map))
       (.write w cpp-json-escape-fn)
       (.write w (emit-cpp-enum commands))
       (.write w (emit-cpp-constants commands))

@@ -2,21 +2,7 @@
 #include <deque>
 #include <time.h>
 #include <Arduino.h>
-
-enum RecordType
-{
-    MEASUREMENT,
-    SIP,
-    REFILL
-};
-
-struct Record
-{
-    time_t start_time;
-    time_t end_time; // 0 if not stabilized
-    float grams;
-    RecordType type;
-};
+#include "generated/cpp_bt_commands_codegen.h"
 
 class DataLogger
 {
@@ -28,12 +14,13 @@ private:
     // Helper method to serialize a single record
     String recordToJson(const Record &r) const
     {
-        return "{\"start_time\":" + String(r.start_time) +
-               ",\"end_time\":" + String(r.end_time) +
-               ",\"grams\":" + String(r.grams, 2) +
-               ",\"type\":\"" + String(r.type == SIP ? "sip" : r.type == REFILL ? "refill"
-                                                                                : "measurement") +
-               "\"}";
+        return String(RecordToJson(r).c_str());
+        // return "{\"start_time\":" + String(r.start_time) +
+        //        ",\"end_time\":" + String(r.end_time) +
+        //        ",\"grams\":" + String(r.grams, 2) +
+        //        ",\"type\":\"" + String(r.type == SIP ? "sip" : r.type == REFILL ? "refill"
+        //                                                                         : "measurement") +
+        //        "\"}";
     }
 
 public:
@@ -127,9 +114,9 @@ public:
     {
         String json = "{";
 
-        // Add metadata
-        json += "\"total\":" + String(recordBuffer.size()) + ",";
-        json += "\"offset\":" + String(offset) + ",";
+        // // Add metadata
+        // json += "\"total\":" + String(recordBuffer.size()) + ",";
+        // json += "\"offset\":" + String(offset) + ",";
 
         // Calculate actual length (handle bounds)
         size_t available = recordBuffer.size() > offset ? recordBuffer.size() - offset : 0;
