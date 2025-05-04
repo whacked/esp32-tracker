@@ -164,9 +164,12 @@
 (defn python-type [clj-type]
   (get python-type-map clj-type "Any"))
 
+(defn capitalize-first-char [s]
+  (str (clojure.string/upper-case (subs s 0 1))
+       (subs s 1)))
+
 (defn class-name-for-schema [command-name suffix]
-  (str (clojure.string/upper-case (subs command-name 0 1))
-       (subs command-name 1)
+  (str (capitalize-first-char command-name)
        suffix))
 
 (defn collect-typed-dicts-in-schema [schema class-name acc]
@@ -178,7 +181,7 @@
                   (fn [a [k v]]
                     (collect-typed-dicts-in-schema
                      v
-                     (str class-name (clojure.string/capitalize (name k))) a))
+                     (str class-name (capitalize-first-char (name k))) a))
                   acc
                   fields)]
         (if (contains? acc' schema)
@@ -282,9 +285,106 @@
         (.write w (emit-python-spec-entry cmd)))
       (.write w "}\n"))))
 
-(when-let [output-file-path (last *command-line-args*)]
+(defn cpp-type [clj-type]
+  (cond
+    (or (= clj-type 'string?) (= clj-type string?)) "std::string"
+    (or (= clj-type 'int?) (= clj-type int?)) "int"
+    (or (= clj-type 'float?) (= clj-type float?)) "float"
+    (or (= clj-type 'boolean?) (= clj-type boolean?)) "bool"
+    :else "/*UnknownType*/"))
 
-  (emit-python-file commands output-file-path)
-  (println (str "wrote to " output-file-path))
+(defn cpp-struct-name [command-name suffix]
+  (str (capitalize-first-char command-name) suffix))
 
-  (System/exit 0))
+(defn emit-cpp-struct [class-name schema class-map]
+  (let [fields (rest schema)]
+    (str "struct " class-name " {\n"
+         (apply str
+                (for [[k v] fields]
+                  (str "    "
+                       (cond
+                         (and (vector? v) (= (first v) :map))
+                         (class-map v)
+                         (and (vector? v) (= (first v) :sequential))
+                         (str "std::vector<" (if (and (vector? (second v)) (= (first (second v)) :map))
+                                               (class-map (second v))
+                                               (cpp-type (second v))) ">")
+                         :else (cpp-type v))
+                       " " (name k) ";\n")))
+         "};\n\n")))
+
+(defn emit-cpp-enum [commands]
+  (str "enum class Command {\n"
+       (apply str
+              (for [{:keys [name]} commands]
+                (str "    " (capitalize-first-char name) ",\n")))
+       "};\n\n"))
+
+(defn emit-cpp-constants [commands]
+  (apply str
+         (for [{:keys [name]} commands]
+           (str "constexpr const char* CMD_"
+                (clojure.string/upper-case (clojure.string/replace name #"-" "_"))
+                " = \"" name "\";\n")))
+  )
+
+(defn collect-cpp-structs-in-schema [schema class-name acc]
+  (cond
+    (and (vector? schema) (= (first schema) :map))
+    (let [fields (rest schema)
+          acc' (reduce
+                (fn [a [k v]]
+                  (collect-cpp-structs-in-schema
+                   v
+                   (str class-name (capitalize-first-char (name k))) a))
+                acc
+                fields)]
+      (if (contains? acc' schema)
+        acc'
+        (assoc acc' schema class-name)))
+    (and (vector? schema) (= (first schema) :sequential))
+    (collect-cpp-structs-in-schema (second schema) (str class-name "Item") acc)
+    :else acc))
+
+(defn collect-cpp-structs
+  ([commands] (collect-cpp-structs commands {}))
+  ([commands acc]
+   (reduce
+    (fn [acc {:keys [name response]}]
+      (collect-cpp-structs-in-schema response (cpp-struct-name name "Response") acc))
+    acc
+    commands)))
+
+(defn emit-cpp-header-file [commands out-path]
+  (let [class-map (collect-cpp-structs commands)
+        struct-defs (->> class-map
+                         (map (fn [[schema class-name]]
+                                (emit-cpp-struct class-name schema class-map)))
+                         (clojure.string/join "\n"))]
+    (with-open [w (io/writer out-path)]
+      (.write w "// AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
+      (.write w "#pragma once\n")
+      (.write w "#include <string>\n#include <vector>\n\n")
+      (.write w (emit-cpp-enum commands))
+      (.write w (emit-cpp-constants commands))
+      (.write w "\n")
+      (.write w struct-defs))))
+
+(let [output-file-path (last *command-line-args*)]
+  (cond
+    (clojure.string/ends-with? output-file-path ".py")
+    (do
+      (emit-python-file commands output-file-path)
+      (println (str "wrote to " output-file-path))
+      (System/exit 0))
+
+    (clojure.string/ends-with? output-file-path ".h")
+    (do
+      (emit-cpp-header-file commands output-file-path)
+      (println (str "wrote to " output-file-path))
+      (System/exit 0))
+
+    :else
+    (do
+      (println "Unknown file extension for codegen output!")
+      (System/exit 1))))
