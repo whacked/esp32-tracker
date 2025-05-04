@@ -6,6 +6,8 @@
 #include "DataLogger.h"
 #include "BtServer.h"
 
+#define DEBUG_CALIBRATION 0
+
 HX711 scale;
 
 // Use the pins you wired
@@ -14,13 +16,13 @@ HX711 scale;
 
 // Calibration values based on your measurements
 #ifdef HOME_SET
-#define CALIBRATION_AT_NO_LOAD 46     // reading at no load  -331 is the average
-#define CALIBRATION_AT_LOAD_1 -299539 // reading at 950g
-#define WEIGHT_AT_LOAD_1 285          // actual weight in grams
-#else                                 // OFFICE_SET
-#define CALIBRATION_AT_NO_LOAD -400   // reading at no load  -331 is the average
-#define CALIBRATION_AT_LOAD_1 998000  // reading at 950g
-#define WEIGHT_AT_LOAD_1 950          // actual weight in grams
+#define CALIBRATION_AT_NO_LOAD 46      // reading at no load  -331 is the average
+#define CALIBRATION_AT_LOAD_1 -1263440 // reading at 950g
+#define WEIGHT_AT_LOAD_1 1199          // actual weight in grams
+#else                                  // OFFICE_SET
+#define CALIBRATION_AT_NO_LOAD -400    // reading at no load  -331 is the average
+#define CALIBRATION_AT_LOAD_1 998000   // reading at 950g
+#define WEIGHT_AT_LOAD_1 950           // actual weight in grams
 #endif
 
 // Stabilization settings
@@ -311,6 +313,28 @@ void loop()
   {
     grams = 0;
   }
+
+#if DEBUG_CALIBRATION
+  // Print raw and EMA values for calibration
+  Serial.printf("RAW: %8.1f | EMA: %8.1f | grams: %8.2f\n", rawValue, emaValue, grams);
+
+  // If user sends a newline, print current calibration info
+  if (Serial.available())
+  {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r')
+    {
+      Serial.println("---- Calibration Debug ----");
+      Serial.printf("RAW: %8.1f\n", rawValue);
+      Serial.printf("EMA: %8.1f\n", emaValue);
+      Serial.printf("grams: %8.2f\n", grams);
+      Serial.printf("CALIBRATION_AT_NO_LOAD: %ld\n", (long)CALIBRATION_AT_NO_LOAD);
+      Serial.printf("CALIBRATION_AT_LOAD_1: %ld\n", (long)CALIBRATION_AT_LOAD_1);
+      Serial.printf("WEIGHT_AT_LOAD_1: %ld\n", (long)WEIGHT_AT_LOAD_1);
+      Serial.println("--------------------------");
+    }
+  }
+#endif
 
   // Check stability on grams value after rounding
   isStable = checkStability(grams);
