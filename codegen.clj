@@ -164,17 +164,66 @@
 (defn python-type [clj-type]
   (get python-type-map clj-type "Any"))
 
+(defn class-name-for-schema [command-name suffix]
+  (str (clojure.string/upper-case (subs command-name 0 1))
+       (subs command-name 1)
+       suffix))
 
-(defn emit-python-method [{:keys [name args doc]}]
+(defn collect-typed-dicts-in-schema [schema class-name acc]
+  (cond
+    (and (vector? schema) (= (first schema) :map))
+    (do
+      (let [fields (rest schema)
+            acc' (reduce
+                  (fn [a [k v]]
+                    (collect-typed-dicts-in-schema
+                     v
+                     (str class-name (clojure.string/capitalize (name k))) a))
+                  acc
+                  fields)]
+        (if (contains? acc' schema)
+          acc'
+          (assoc acc' schema class-name))))
+    (and (vector? schema) (= (first schema) :sequential))
+    (collect-typed-dicts-in-schema (second schema) (str class-name "Item") acc)
+    :else acc))
+
+(defn collect-typed-dicts
+  "Recursively collects all map schemas in responses, returns a map of {schema -> class-name}."
+  ([commands] (collect-typed-dicts commands {}))
+  ([commands acc]
+   (reduce
+    (fn [acc {:keys [name response]}]
+      (collect-typed-dicts-in-schema response (class-name-for-schema name "Response") acc))
+    acc
+    commands)))
+
+(defn python-return-type [response class-map]
+  (cond
+    (nil? response) "None"
+    (or (= response 'string?) (= response string?)) "str"
+    (or (= response 'int?) (= response int?)) "int"
+    (or (= response 'boolean?) (= response boolean?)) "bool"
+    (or (= response 'float?) (= response float?)) "float"
+    (and (vector? response) (= (first response) :map)) (class-map response)
+    (and (vector? response) (= (first response) :sequential))
+    (str "List[" (python-return-type (second response) class-map) "]")
+    :else "Any"))
+
+(defn emit-python-method [{:keys [name args doc response]} class-map]
   (let [pyargs (clojure.string/join ", " (cons "self" (map #(str (:name %) "") args)))
+        return-type (python-return-type response class-map)
         docstring (str "\"\"\"" doc
                        (when (seq args)
                          (str "\n\nArgs:\n"
                               (apply str
                                      (for [{:keys [name type doc]} args]
                                        (str "    " name " (" (python-type type) "): " doc "\n")))))
+                       (when (not= return-type "None")
+                         (str "\n\nReturns:\n    " return-type))
                        "\"\"\"")]
-    (str "    def " name "(" pyargs "):\n"
+    (str "    async def " name "(" pyargs ")"
+         " -> " return-type ":\n"
          "        " docstring "\n"
          "        pass\n\n")))
 
@@ -196,18 +245,42 @@
                 (str "    " (upper-snake-case name) " = \"" name "\"\n")))
        "\n"))
 
+(defn emit-typed-dict [class-name schema class-map]
+  (let [fields (rest schema)]
+    (str "class " class-name "(TypedDict):\n"
+         (apply str
+                (for [[k v] fields]
+                  (str "    " (name k) ": "
+                       (cond
+                         (and (vector? v) (= (first v) :map))
+                         (class-map v)
+                         (and (vector? v) (= (first v) :sequential))
+                         (str "List[" (if (and (vector? (second v)) (= (first (second v)) :map))
+                                        (class-map (second v))
+                                        (python-type (second v))) "]")
+                         :else (python-type v))
+                       "\n")))
+         (when (empty? fields) "    pass\n")
+         "\n")))
+
 (defn emit-python-file [commands out-path]
-  (with-open [w (io/writer out-path)]
-    (.write w "# AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
-    (.write w "from typing import Any\n\n")
-    (.write w (emit-python-enum commands))
-    (.write w "class BaseCommandHandler:\n")
-    (doseq [cmd commands]
-      (.write w (emit-python-method cmd)))
-    (.write w "\nCOMMAND_SPECS = {\n")
-    (doseq [cmd commands]
-      (.write w (emit-python-spec-entry cmd)))
-    (.write w "}\n")))
+  (let [class-map (collect-typed-dicts commands)
+        typed-dict-defs (->> class-map
+                             (map (fn [[schema class-name]]
+                                    (emit-typed-dict class-name schema class-map)))
+                             (clojure.string/join "\n"))]
+    (with-open [w (io/writer out-path)]
+      (.write w "# AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
+      (.write w "from typing import Any, List, TypedDict\n\n")
+      (.write w (emit-python-enum commands))
+      (.write w typed-dict-defs)
+      (.write w "class BaseCommandHandler:\n")
+      (doseq [cmd commands]
+        (.write w (emit-python-method cmd class-map)))
+      (.write w "\nCOMMAND_SPECS = {\n")
+      (doseq [cmd commands]
+        (.write w (emit-python-spec-entry cmd)))
+      (.write w "}\n"))))
 
 (when-let [output-file-path (last *command-line-args*)]
 
