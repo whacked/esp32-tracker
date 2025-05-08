@@ -12,18 +12,6 @@ private:
     bool loggingEnabled;
     time_t timeOffset; // Moved from main.cpp
 
-    // Helper method to serialize a single record
-    std::string recordToJson(const Record &r) const
-    {
-        // return "{\"start_time\":" + String(r.start_time) +
-        //        ",\"end_time\":" + String(r.end_time) +
-        //        ",\"grams\":" + String(r.grams, 2) +
-        //        ",\"type\":\"" + String(r.type == SIP ? "sip" : r.type == REFILL ? "refill"
-        //                                                                         : "measurement") +
-        //        "\"}";
-        return RecordToJson(r);
-    }
-
 public:
     DataLogger() : loggingEnabled(true), timeOffset(0) {}
 
@@ -115,7 +103,7 @@ public:
     {
         std::string json = "{";
 
-        // // Add metadata
+        // // Add metadata -- deletion candidate (not in the schema / codegen)
         // json += "\"total\":" + std::to_string(recordBuffer.size()) + ",";
         // json += "\"offset\":" + std::to_string(offset) + ",";
 
@@ -131,7 +119,7 @@ public:
         {
             if (i > 0)
                 json += ",";
-            json += recordToJson(recordBuffer[offset + i]);
+            json += RecordToJson(recordBuffer[offset + i]);
         }
 
         json += "]}";

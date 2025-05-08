@@ -44,7 +44,6 @@ TEST_F(CommandHandlerTest, ReadBuffer)
 
     auto [cmd, args] = CommandHandler::parseCommand(std::string(CMD_READBUFFER) + " 1 2");
     std::string response = handler.handleCommand(cmd, args);
-    std::cout << "response: " << response << std::endl;
     EXPECT_EQ(response, "{\"length\":2,\"records\":[{\"start_time\":4,\"end_time\":5,\"grams\":6.000000,\"type\":\"refill\"},{\"start_time\":7,\"end_time\":8,\"grams\":9.000000,\"type\":\"sip\"}]}");
 }
 
