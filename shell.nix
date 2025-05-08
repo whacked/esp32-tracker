@@ -22,12 +22,10 @@ in pkgs.mkShell {
     pythonPackages.matplotlib
     pythonPackages.pandas
     pythonPackages.pyaml
-    pythonPackages.polars
     pythonPackages.psutil
     pkgs.mdsh
     pkgs.pkg-config
-    pkgs.arrow-cpp          # C++ Arrow library
-    pkgs.fast-float
+    pkgs.gtest              # C++ Google Test library
     pkgs.rlwrap
     pkgs.babashka
   ] ++ (with pkgs; [
@@ -39,6 +37,8 @@ in pkgs.mkShell {
 
   nativeBuildInputs = [
   ];
+
+  name = "esp32-water-tracker";
 
   shellHook = nix_shortcuts.shellHook + ''
     _setup-venv() {
