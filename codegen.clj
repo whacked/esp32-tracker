@@ -427,7 +427,7 @@
                       (str "std::to_string(r." field ")")
 
                       (= v RecordType)
-                      (str "RecordTypeToString(r." field ")")
+                      (str "\"\\\"\" + RecordTypeToString(r." field ") + \"\\\"\"")
 
                       :else "\"null\"")]
                 (str "        \"" comma key "\" + " value-expr)))

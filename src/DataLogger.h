@@ -1,8 +1,9 @@
 #pragma once
 #include <deque>
 #include <time.h>
-#include <Arduino.h>
 #include "generated/cpp_bt_commands_codegen.h"
+#include <vector>
+#include <algorithm> // for std::min
 
 class DataLogger
 {
@@ -12,15 +13,15 @@ private:
     time_t timeOffset; // Moved from main.cpp
 
     // Helper method to serialize a single record
-    String recordToJson(const Record &r) const
+    std::string recordToJson(const Record &r) const
     {
-        return String(RecordToJson(r).c_str());
         // return "{\"start_time\":" + String(r.start_time) +
         //        ",\"end_time\":" + String(r.end_time) +
         //        ",\"grams\":" + String(r.grams, 2) +
         //        ",\"type\":\"" + String(r.type == SIP ? "sip" : r.type == REFILL ? "refill"
         //                                                                         : "measurement") +
         //        "\"}";
+        return RecordToJson(r);
     }
 
 public:
@@ -56,14 +57,14 @@ public:
         return time(nullptr) + timeOffset;
     }
 
-    String getTimestamp() const
+    std::string getTimestamp() const
     {
         time_t now = getCorrectedTime();
         struct tm timeinfo;
         localtime_r(&now, &timeinfo);
         char timestamp[25];
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S%z", &timeinfo);
-        return String(timestamp);
+        return std::string(timestamp);
     }
 
     // Specialized record additions (previously scattered in main.cpp)
@@ -110,18 +111,18 @@ public:
     }
 
     // Get a paginated subset of records as JSON
-    String getBufferJsonPaginated(size_t offset, size_t length) const
+    std::string getBufferJsonPaginated(size_t offset, size_t length) const
     {
-        String json = "{";
+        std::string json = "{";
 
         // // Add metadata
-        // json += "\"total\":" + String(recordBuffer.size()) + ",";
-        // json += "\"offset\":" + String(offset) + ",";
+        // json += "\"total\":" + std::to_string(recordBuffer.size()) + ",";
+        // json += "\"offset\":" + std::to_string(offset) + ",";
 
         // Calculate actual length (handle bounds)
         size_t available = recordBuffer.size() > offset ? recordBuffer.size() - offset : 0;
-        size_t actualLength = min(length, available);
-        json += "\"length\":" + String(actualLength) + ",";
+        size_t actualLength = std::min(length, available);
+        json += "\"length\":" + std::to_string(actualLength) + ",";
 
         // Add records array
         json += "\"records\":[";
@@ -138,7 +139,7 @@ public:
     }
 
     // Simplified version that gets all records
-    String getBufferJson() const
+    std::string getBufferJson() const
     {
         return getBufferJsonPaginated(0, recordBuffer.size());
     }
@@ -153,7 +154,7 @@ public:
 
         // Calculate actual number of records we can drop
         size_t available = recordBuffer.size() - offset;
-        size_t actualLength = min(length, available);
+        size_t actualLength = std::min(length, available);
 
         // Create iterators for the range to remove
         auto start = recordBuffer.begin() + offset;

@@ -3,6 +3,8 @@
 #include "DataLogger.h"
 #include "include/build_metadata.h"
 
+const std::string STATUS_OK_JSON = "{\"status\":\"ok\"}";
+
 class CommandHandler
 {
 public:
@@ -57,7 +59,7 @@ public:
         else if (command == CMD_CLEARBUFFER)
         {
             dataLogger.clearBuffer();
-            return "{\"status\":\"ok\"}";
+            return STATUS_OK_JSON;
         }
         else if (command == CMD_READBUFFER)
         {
@@ -82,12 +84,12 @@ public:
         else if (command == CMD_STARTLOGGING)
         {
             dataLogger.setLoggingEnabled(true);
-            return "{\"status\":\"ok\"}";
+            return STATUS_OK_JSON;
         }
         else if (command == CMD_STOPLOGGING)
         {
             dataLogger.setLoggingEnabled(false);
-            return "{\"status\":\"ok\"}";
+            return STATUS_OK_JSON;
         }
         else if (command == CMD_GETNOW)
         {
@@ -127,6 +129,6 @@ public:
                    ",\"length\":" + std::to_string(length) + "}";
         }
 
-        return "{\"status\":\"error\",\"message\":\"Unknown command\"}";
+        return "{\"status\":\"error\",\"message\":\"Unknown command: '" + json_escape(command) + "'\"}";
     }
 };

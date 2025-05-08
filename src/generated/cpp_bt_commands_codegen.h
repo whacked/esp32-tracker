@@ -32,7 +32,7 @@ inline std::string RecordToJson(const Record& r) {
         "\"start_time\":" + std::to_string(r.start_time) +
         ",\"end_time\":" + std::to_string(r.end_time) +
         ",\"grams\":" + std::to_string(r.grams) +
-        ",\"type\":" + RecordTypeToString(r.type) + "}";
+        ",\"type\":" + "\"" + RecordTypeToString(r.type) + "\"" + "}";
 }
 
 #include <string>
@@ -140,7 +140,7 @@ inline std::string ReadBufferResponseRecordsItemToJson(const ReadBufferResponseR
         "\"start_time\":" + std::to_string(r.start_time) +
         ",\"end_time\":" + std::to_string(r.end_time) +
         ",\"grams\":" + std::to_string(r.grams) +
-        ",\"type\":" + RecordTypeToString(r.type) + "}";
+        ",\"type\":" + "\"" + RecordTypeToString(r.type) + "\"" + "}";
 }
 
 
