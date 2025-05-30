@@ -1,9 +1,14 @@
 #pragma once
 #include <string>
 #include "DataLogger.h"
-#include "include/build_metadata.h"
+#include <build_metadata.h>
 
 const std::string STATUS_OK_JSON = "{\"status\":\"ok\"}";
+
+inline std::string errorJsonResponse(const std::string &message)
+{
+    return "{\"status\":\"error\",\"message\":\"" + json_escape(message) + "\"}";
+}
 
 class CommandHandler
 {
@@ -121,6 +126,34 @@ public:
             }
 
             size_t offset = std::stoul(args.substr(0, spaceIdx));
+            size_t length = std::stoul(args.substr(spaceIdx + 1));
+
+            bool success = dataLogger.dropRecords(offset, length);
+            return "{\"status\":\"" + std::string(success ? "ok" : "error") +
+                   "\",\"offset\":" + std::to_string(offset) +
+                   ",\"length\":" + std::to_string(length) + "}";
+        }
+        else if (command == CMD_SETLOGLEVEL)
+        {
+            size_t spaceIdx = args.find(' ');
+            if (spaceIdx == std::string::npos)
+            {
+                return errorJsonResponse("Invalid format");
+            }
+                return errorJsonResponse("Invalid format");
+
+            bool success = dataLogger.dropRecords(offset, length);
+            return "{\"status\":\"" + std::string(success ? "ok" : "error") +
+                   "\",\"offset\":" + std::to_string(offset) +
+                   ",\"length\":" + std::to_string(length) + "}";
+        }
+        else if (command == CMD_SETLOGLEVEL)
+        {
+            size_t spaceIdx = args.find(' ');
+            if (spaceIdx == std::string::npos)
+            {
+                return errorResponse("Invalid format");
+            }
             size_t length = std::stoul(args.substr(spaceIdx + 1));
 
             bool success = dataLogger.dropRecords(offset, length);
