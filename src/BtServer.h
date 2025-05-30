@@ -257,6 +257,7 @@ private:
         {
             notify("Unknown command");
         }
+        auto [command, args] = parseCommand(cmd.c_str());
     }
 
 public:

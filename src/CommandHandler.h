@@ -2,7 +2,7 @@
 #include <string>
 #include "DataLogger.h"
 #include <build_metadata.h>
-#include <sstream>
+#include "util.h"
 
 const std::string STATUS_OK_JSON = "{\"status\":\"ok\"}";
 
@@ -18,25 +18,6 @@ public:
 
     // Process a command and return the response
     virtual std::string handleCommand(const std::string &command, const std::string &args) = 0;
-
-    // Helper to parse command and args from a full command string
-    static std::pair<std::string, std::string> parseCommand(const std::string &fullCommand)
-    {
-        std::istringstream iss(fullCommand);
-        std::string command;
-        iss >> command; // This automatically handles leading/trailing whitespace
-
-        if (command.empty())
-        {
-            return {"", ""};
-        }
-
-        // Get the rest of the line as args
-        std::string args;
-        std::getline(iss >> std::ws, args); // std::ws skips leading whitespace
-
-        return {command, args};
-    }
 };
 
 // Concrete implementation that uses DataLogger
