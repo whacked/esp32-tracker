@@ -4,13 +4,18 @@ import time
 from asyncio import Queue as AsyncQueue
 from pprint import pprint
 from textwrap import indent
-from typing import Any, Optional, cast
+from typing import Any, List, Optional, cast
 
 import yaml
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
 
-from src.generated.python_codegen import (
+from src.generated.python_autogen import (
     COMMAND_SPECS,
     BaseCommandHandler,
     Command,
@@ -27,6 +32,22 @@ TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 TARGET_NAME = "ESP32-Scale"
 
 response_queue: AsyncQueue[str] = AsyncQueue()
+
+# Define available commands and their descriptions
+COMMANDS = {
+    "help": "Show this help message",
+    "exit": "Exit the program",
+    **{cmd: spec["doc"] for cmd, spec in COMMAND_SPECS.items()},
+}
+
+# Create a style for syntax highlighting
+style = Style.from_dict(
+    {
+        "command": "#ansigreen",
+        "error": "#ansired",
+        "response": "#ansiblue",
+    }
+)
 
 
 async def acquire_device() -> Optional[BLEDevice]:
@@ -107,19 +128,55 @@ async def main():
         await client.start_notify(TX_UUID, handle_rx)
         await handler.setTime(int(time.time()))
 
+        # Create a prompt session with history and autocompletion
+        session = PromptSession(
+            history=FileHistory(".bttest_history"),
+            completer=WordCompleter(list(COMMANDS.keys())),
+            style=style,
+        )
+
+        def get_formatted_prompt() -> HTML:
+            return HTML("<command>> </command>")
+
+        def format_response(text: str) -> HTML:
+            return HTML(f"<response>{text}</response>")
+
+        def format_error(text: str) -> HTML:
+            return HTML(f"<error>Error: {text}</error>")
+
+        def show_help():
+            print("\nAvailable commands:")
+            for cmd, desc in COMMANDS.items():
+                print(f"  {cmd:<10} - {desc}")
+
         while True:
-            # Read command in a separate thread, so event loop remains unblocked
-            cmd = await asyncio.to_thread(input, "> ")
-            cmd = cmd.strip()
-            if not cmd:
+            try:
+                # Get command with autocompletion
+                cmd = await session.prompt_async(get_formatted_prompt())
+                cmd = cmd.strip()
+
+                if not cmd:
+                    continue
+
+                if cmd.lower() == "exit":
+                    try:
+                        await client.stop_notify(TX_UUID)
+                        await client.disconnect()
+                    except Exception as e:
+                        print(f"Note: Device already disconnected or unreachable: {e}")
+                    break
+
+                if cmd.lower() == "help":
+                    show_help()
+                    continue
+
+                response = await handler.sendCommandString(cmd)
+                print(response)
+
+            except KeyboardInterrupt:
                 continue
-            if cmd.lower() == "exit":
-                await client.stop_notify(TX_UUID)
-                await client.disconnect()
-                break
-            print(f"Sending command: {cmd}")
-            response = await handler.sendCommandString(cmd)
-            pprint(response)
+            except Exception as e:
+                print(format_error(str(e)))
 
 
 async def demo_data_fetch():
@@ -157,8 +214,15 @@ async def demo_data_fetch():
             records_to_drop -= drop_size
 
         print(f"retrieved {len(all_records)} records")
+        json_lines = []
         for record in all_records:
-            print(record)
+            print(json.dumps(record))
+            json_lines.append(json.dumps(record))
+
+        if json_lines:
+            with open("./_data/records.jsonl", "a") as ofile:
+                ofile.write("\n")
+                ofile.write("\n".join(json_lines))
 
         return all_records
 
