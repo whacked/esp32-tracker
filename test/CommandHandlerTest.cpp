@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "../src/CommandHandler.h"
 #include "../src/DataLogger.h"
-#include "../src/generated/cpp_bt_commands_codegen.h"
+#include "../src/generated/cpp_bt_commands_autogen.h"
 #include <sstream>
 
 class CommandHandlerTest : public ::testing::Test
