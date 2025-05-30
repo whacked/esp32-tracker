@@ -1,7 +1,10 @@
 #include <string>
 #include <cstdio>
+#include <cstdlib> // for std::strtol
+#include <vector>
+#include <cctype>
 
-inline std::string json_escape(const std::string &s)
+std::string json_escape(const std::string &s)
 {
     std::string out;
     for (char c : s)
@@ -44,6 +47,23 @@ inline std::string json_escape(const std::string &s)
         }
     }
     return out;
+}
+
+std::vector<std::string> splitBySpace(const std::string &input)
+{
+    std::vector<std::string> result;
+    size_t pos = 0;
+    while (pos < input.length())
+    {
+        while (pos < input.length() && std::isspace(input[pos]))
+            ++pos; // skip spaces
+        size_t start = pos;
+        while (pos < input.length() && !std::isspace(input[pos]))
+            ++pos;
+        if (start < pos)
+            result.emplace_back(input.substr(start, pos - start));
+    }
+    return result;
 }
 
 std::pair<std::string, std::string> parseCommand(const std::string &fullCommand)

@@ -127,7 +127,7 @@
     :args []
     :response string?
     :doc "Unknown command (error)"}
-  ])
+   ])
 
 (comment
   (println "Validating good commands:")
@@ -347,8 +347,7 @@
          (for [{:keys [name]} commands]
            (str "constexpr const char* CMD_"
                 (clojure.string/upper-case (clojure.string/replace name #"-" "_"))
-                " = \"" name "\";\n")))
-  )
+                " = \"" name "\";\n"))))
 
 (defn collect-cpp-structs-in-schema [malli-schema class-name acc]
   (cond
@@ -369,72 +368,75 @@
     :else acc))
 
 (defn generate-cpp-arg-structs-and-parsers [arg-schemas class-name acc]
-  (println "generate-cpp-arg-structs-and-parsers" arg-schemas class-name)
-  (println (str
-  "struct " class-name " {\n"
-  (->> arg-schemas
-    (map (fn [arg-schema]
-           ))
-    (doall)
-  )))
   (if (empty? arg-schemas)
     acc
-    ;;(recur (rest arg-schemas) class-name (assoc acc {} class-name))
-    (assoc acc [:vector] class-name)
-    )
-  )
+    (assoc acc [:vector] class-name)))
 
 (defn arg-schema-to-malli-schema [arg-schema]
   (when-not (empty? arg-schema)
-   (apply vector :vector (->> arg-schema
-    (map (fn [{:keys [name type]}]
-      [(keyword name) type]))))))
+    (apply vector :vector (->> arg-schema
+                               (map (fn [{:keys [name type]}]
+                                      [(keyword name) type]))))))
 
 (defn collect-cpp-structs
   ([commands] (collect-cpp-structs commands {}))
   ([commands acc]
    (reduce
     (fn [acc {:keys [name args response]}]
-
-    ;; (println "GOT ARGS " (arg-schema-to-malli-schema args))
-     (->> acc
-        ;; (generate-cpp-arg-structs-and-parsers args (cpp-struct-name name "Args"))
-        (collect-cpp-structs-in-schema
-        (arg-schema-to-malli-schema args)
-        (cpp-struct-name name "Args"))
-        (collect-cpp-structs-in-schema response (cpp-struct-name name "Response"))))
+      (->> acc
+           (collect-cpp-structs-in-schema
+            (arg-schema-to-malli-schema args)
+            (cpp-struct-name name "Args"))
+           (collect-cpp-structs-in-schema response (cpp-struct-name name "Response"))))
     acc
     commands)))
 
-(def cpp-json-escape-fn
-  (slurp "src/util.cpp"))
-
 (defn emit-cpp-json-array [field-name item-type]
   (str
-    "\"[\" +\n"
-    "        [&](){\n"
-    "            std::string arr;\n"
-    "            for (size_t i = 0; i < r." field-name ".size(); ++i) {\n"
-    "                if (i > 0) arr += \",\";\n"
-    "                arr += " item-type "ToJson(r." field-name "[i]);\n"
-    "            }\n"
-    "            return arr;\n"
-    "        }() + \"]\""))
+   "\"[\" +\n"
+   "        [&](){\n"
+   "            std::string arr;\n"
+   "            for (size_t i = 0; i < r." field-name ".size(); ++i) {\n"
+   "                if (i > 0) arr += \",\";\n"
+   "                arr += " item-type "ToJson(r." field-name "[i]);\n"
+   "            }\n"
+   "            return arr;\n"
+   "        }() + \"]\""))
+
+(defn malli-predicate->cpp-type [pred]
+  (cond
+    (= pred int?) "int"
+    (= pred string?) "std::string"
+    (= pred float?) "float"
+    :else (throw (ex-info "Unknown predicate" {:pred pred}))))
+
+(defn cpp-parse-expr [k cpp-type idx]
+  (let [target (str "result." (name k))
+        token (str "tokens[" idx "]")]
+    (case cpp-type
+      "int"   (str target " = std::strtol(" token ".c_str(), nullptr, 10);")
+      "float" (str target " = std::strtof(" token ".c_str(), nullptr);")
+      "std::string" (str target " = " token ";")
+      (throw (ex-info "Unsupported type" {:type cpp-type})))))
 
 (defn emit-cpp-string-parser [class-name schema class-map]
-
- (str 
-  class-name " parse" class-name "Args(const std::string &args) {
-    std::istringstream iss(args);
-    " class-name " result;
-    iss >> " (->> (rest schema) (map (fn [[k _]] (str "result." (name k)))) (clojure.string/join " >> ")) ";
-
-    if (iss.fail()) {
-        throw std::runtime_error(\"Invalid arguments\");
-    }
-
-    return result;
-}\n\n"))
+  (let [args (rest schema) ;; skip :vector tag
+        lines
+        (->> args
+             (map-indexed (fn [i [k pred]]
+                            (let [cpp-type (malli-predicate->cpp-type pred)]
+                              (cpp-parse-expr k cpp-type i))))
+             (clojure.string/join "\n    "))]
+    (str
+     class-name " parse" class-name "(const std::string &args) {\n"
+     "    auto tokens = splitBySpace(args);\n"
+     "    if (tokens.size() < " (count args) ") {\n"
+     "        throw std::runtime_error(\"Invalid arguments\");\n"
+     "    }\n"
+     "    " class-name " result;\n"
+     "    " lines "\n"
+     "    return result;\n"
+     "}\n\n")))
 
 (defn emit-cpp-string-parser-signature [class-name]
   (str "inline std::string " class-name "ToJson(const " class-name "& r)"))
@@ -444,41 +446,42 @@
   (let [fields (rest schema)]
     (str (emit-cpp-string-parser-signature class-name) " {\n"
          "    return std::string(\"{\") +\n"
-         (clojure.string/join " +\n"
-           (map-indexed
-            (fn [i [k v]]
-              (let [comma (if (zero? i) "" ",")
-                    field (name k)
-                    key (str "\\\"" field "\\\":")
-                    value-expr
-                    (cond
-                      (or (= v 'string?) (= v string?))
-                      (str "json_escape(r." field ")")
+         (clojure.string/join
+          " +\n"
+          (map-indexed
+           (fn [i [k v]]
+             (let [comma (if (zero? i) "" ",")
+                   field (name k)
+                   key (str "\\\"" field "\\\":")
+                   value-expr
+                   (cond
+                     (or (= v 'string?) (= v string?))
+                     (str "json_escape(r." field ")")
 
-                      (or (= v 'int?) (= v int?) (= v 'float?) (= v float?))
-                      (str "std::to_string(r." field ")")
+                     (or (= v 'int?) (= v int?) (= v 'float?) (= v float?))
+                     (str "std::to_string(r." field ")")
 
-                      (or (= v 'boolean?) (= v boolean?))
-                      (str "(r." field " ? \"true\" : \"false\")")
+                     (or (= v 'boolean?) (= v boolean?))
+                     (str "(r." field " ? \"true\" : \"false\")")
 
-                      (and (vector? v) (= (first v) :map))
-                      (str (class-map v) "ToJson(r." field ")")
+                     (and (vector? v) (= (first v) :map))
+                     (str (class-map v) "ToJson(r." field ")")
 
-                      (and (vector? v) (= (first v) :sequential))
-                      (let [item-type (if (and (vector? (second v)) (= (first (second v)) :map))
-                                        (class-map (second v))
-                                        (cpp-type (second v)))]
-                        (emit-cpp-json-array field item-type))
+                     (and (vector? v) (= (first v) :sequential))
+                     (let [item-type (if (and (vector? (second v)) (= (first (second v)) :map))
+                                       (class-map (second v))
+                                       (cpp-type (second v)))]
+                       (emit-cpp-json-array field item-type))
 
-                      (= v EpochTime)
-                      (str "std::to_string(r." field ")")
+                     (= v EpochTime)
+                     (str "std::to_string(r." field ")")
 
-                      (= v RecordType)
-                      (str "\"\\\"\" + RecordTypeToString(r." field ") + \"\\\"\"")
+                     (= v RecordType)
+                     (str "\"\\\"\" + RecordTypeToString(r." field ") + \"\\\"\"")
 
-                      :else "\"null\"")]
-                (str "        \"" comma key "\" + " value-expr)))
-            fields))
+                     :else "\"null\"")]
+               (str "        \"" comma key "\" + " value-expr)))
+           fields))
          " + \"}\";\n"
          "}\n\n")))
 
@@ -519,33 +522,34 @@
 
 (defn emit-cpp-header-file [commands out-path]
   (let [class-map (collect-cpp-structs commands)
+        ;;_ (clojure.pprint/pprint class-map)
         struct-forward-decls (->> class-map
                                   (map (fn [[schema class-name]]
                                          (str "struct " class-name ";")))
                                   (clojure.string/join "\n"))
         function-forward-decls (->> class-map
-                                  (map (fn [[schema class-name]]
-                                         (str (emit-cpp-string-parser-signature class-name) ";")))
-                                  (clojure.string/join "\n"))
+                                    (map (fn [[schema class-name]]
+                                           (str (emit-cpp-string-parser-signature class-name) ";")))
+                                    (clojure.string/join "\n"))
         struct-and-tojson-defs (->> class-map
                                     (map (fn [[schema class-name]]
-                                          ;; (println "--> GEN >>>" class-name " // " schema "\n\n")
-                                          (str (emit-cpp-struct class-name schema class-map)
-                                               (when (= (first schema) :vector)
-                                                 (emit-cpp-string-parser class-name schema class-map))
-                                               (emit-cpp-tojson class-name schema class-map)))
-                                    )
+                                           (str (emit-cpp-struct class-name schema class-map)
+                                                (when (= (first schema) :vector)
+                                                  (emit-cpp-string-parser class-name schema class-map))
+                                                (emit-cpp-tojson class-name schema class-map)))
+                                         )
                                     (clojure.string/join "\n"))]
-    ;;(clojure.pprint/pprint class-map)
+
     (with-open [w (io/writer out-path)]
       (.write w "// AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
       (.write w "// Header guard\n")
       (.write w "#pragma once\n")
-      (.write w "// Standard includes\n") 
-      (.write w (str (->> ["string" "vector" "time.h" "sstream"]
-                         (map #(str "#include <" % ">"))
-                         (interpose "\n")
-                         (apply str))
+      (.write w "#include \"util.h\"\n")
+      (.write w "// Standard includes\n")
+      (.write w (str (->> ["string" "vector" "time.h"]
+                          (map #(str "#include <" % ">"))
+                          (interpose "\n")
+                          (apply str))
                      "\n\n"))
       (.write w "// RecordType enum definition\n")
       (.write w (emit-cpp-enum-from-malli "RecordType" RecordType))
@@ -555,8 +559,6 @@
       (.write w (emit-cpp-struct-from-malli "Record" Record CppTypeMap))
       (.write w "// Record toJson function\n")
       (.write w (emit-cpp-tojson "Record" Record CppTypeMap))
-      (.write w "// JSON string escaping utility\n")
-      (.write w cpp-json-escape-fn)
       (.write w "// Command enum definition\n")
       (.write w (emit-cpp-enum commands))
       (.write w "// Command string constants\n")

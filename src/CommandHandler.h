@@ -113,52 +113,42 @@ public:
         }
         else if (command == CMD_DROPRECORDS)
         {
-            size_t spaceIdx = args.find(' ');
-            if (spaceIdx == std::string::npos)
+            ReadBufferArgs dropArgs = parseReadBufferArgs(args);
+            if (dropArgs.offset < 0 || dropArgs.length < 0)
             {
-                return errorJsonResponse("Invalid format");
+                return errorJsonResponse("Invalid arguments");
             }
 
-            size_t offset = std::stoul(args.substr(0, spaceIdx));
-            size_t length = std::stoul(args.substr(spaceIdx + 1));
-
-            bool success = dataLogger.dropRecords(offset, length);
+            bool success = dataLogger.dropRecords(dropArgs.offset, dropArgs.length);
             DropRecordsResponse response{
                 .status = success ? "ok" : "error",
-                .offset = offset,
-                .length = length};
+                .offset = dropArgs.offset,
+                .length = dropArgs.length};
             return DropRecordsResponseToJson(response);
         }
         else if (command == CMD_SETLOGLEVEL)
         {
-            size_t spaceIdx = args.find(' ');
-            if (spaceIdx == std::string::npos)
-            {
-                return errorJsonResponse("Invalid format");
-            }
+            SetLogLevelArgs llArgs = parseSetLogLevelArgsArgs(args);
 
-            std::string printer = args.substr(0, spaceIdx);
-            int level = std::stoi(args.substr(spaceIdx + 1));
-
-            if (level >= 0 && level <= 3)
+            if (llArgs.level >= 0 && llArgs.level <= 3)
             {
-                if (printer == "raw")
+                if (llArgs.printer == "raw")
                 {
-                    rawPrinter.logLevel = level;
+                    rawPrinter.logLevel = llArgs.level;
                 }
-                else if (printer == "event")
+                else if (llArgs.printer == "event")
                 {
-                    eventPrinter.logLevel = level;
+                    eventPrinter.logLevel = llArgs.level;
                 }
-                else if (printer == "status")
+                else if (llArgs.printer == "status")
                 {
-                    statusPrinter.logLevel = level;
+                    statusPrinter.logLevel = llArgs.level;
                 }
-                else if (printer == "all")
+                else if (llArgs.printer == "all")
                 {
-                    rawPrinter.logLevel = level;
-                    eventPrinter.logLevel = level;
-                    statusPrinter.logLevel = level;
+                    rawPrinter.logLevel = llArgs.level;
+                    eventPrinter.logLevel = llArgs.level;
+                    statusPrinter.logLevel = llArgs.level;
                 }
                 else
                 {
@@ -167,8 +157,8 @@ public:
 
                 SetLogLevelResponse response{
                     "ok",
-                    printer,
-                    level};
+                    llArgs.printer,
+                    llArgs.level};
                 return SetLogLevelResponseToJson(response);
             }
             return errorJsonResponse("Invalid level");

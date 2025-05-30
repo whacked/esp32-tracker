@@ -2,11 +2,11 @@
 
 // Header guard
 #pragma once
+#include "util.h"
 // Standard includes
 #include <string>
 #include <vector>
 #include <time.h>
-#include <sstream>
 
 // RecordType enum definition
 enum RecordType {
@@ -42,54 +42,6 @@ inline std::string RecordToJson(const Record& r) {
         ",\"type\":" + "\"" + RecordTypeToString(r.type) + "\"" + "}";
 }
 
-// JSON string escaping utility
-#include <string>
-#include <cstdio>
-
-inline std::string json_escape(const std::string &s)
-{
-    std::string out;
-    for (char c : s)
-    {
-        switch (c)
-        {
-        case '\"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\b':
-            out += "\\b";
-            break;
-        case '\f':
-            out += "\\f";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            if (static_cast<unsigned char>(c) < 0x20)
-            {
-                // Control character, encode as \u00XX
-                char buf[7];
-                snprintf(buf, sizeof(buf), "\\u%04x", c);
-                out += buf;
-            }
-            else
-            {
-                out += c;
-            }
-        }
-    }
-    return out;
-}
 // Command enum definition
 enum class Command {
     GetVersion,
@@ -133,8 +85,8 @@ struct SetLogLevelResponse;
 struct GetStatusResponse;
 struct SetTimeArgs;
 struct SetTimeResponse;
-struct ReadBufferResponse;
 struct CalibrateArgs;
+struct ReadBufferResponse;
 struct ReadBufferResponseRecordsItem;
 struct SetSamplingRateArgs;
 
@@ -146,8 +98,8 @@ inline std::string SetLogLevelResponseToJson(const SetLogLevelResponse& r);
 inline std::string GetStatusResponseToJson(const GetStatusResponse& r);
 inline std::string SetTimeArgsToJson(const SetTimeArgs& r);
 inline std::string SetTimeResponseToJson(const SetTimeResponse& r);
-inline std::string ReadBufferResponseToJson(const ReadBufferResponse& r);
 inline std::string CalibrateArgsToJson(const CalibrateArgs& r);
+inline std::string ReadBufferResponseToJson(const ReadBufferResponse& r);
 inline std::string ReadBufferResponseRecordsItemToJson(const ReadBufferResponseRecordsItem& r);
 inline std::string SetSamplingRateArgsToJson(const SetSamplingRateArgs& r);
 
@@ -168,15 +120,14 @@ struct SetLogLevelArgs {
     int level;
 };
 
-SetLogLevelArgs parseSetLogLevelArgsArgs(const std::string &args) {
-    std::istringstream iss(args);
-    SetLogLevelArgs result;
-    iss >> result.printer >> result.level;
-
-    if (iss.fail()) {
+SetLogLevelArgs parseSetLogLevelArgs(const std::string &args) {
+    auto tokens = splitBySpace(args);
+    if (tokens.size() < 2) {
         throw std::runtime_error("Invalid arguments");
     }
-
+    SetLogLevelArgs result;
+    result.printer = tokens[0];
+    result.level = std::strtol(tokens[1].c_str(), nullptr, 10);
     return result;
 }
 
@@ -206,15 +157,14 @@ struct ReadBufferArgs {
     int length;
 };
 
-ReadBufferArgs parseReadBufferArgsArgs(const std::string &args) {
-    std::istringstream iss(args);
-    ReadBufferArgs result;
-    iss >> result.offset >> result.length;
-
-    if (iss.fail()) {
+ReadBufferArgs parseReadBufferArgs(const std::string &args) {
+    auto tokens = splitBySpace(args);
+    if (tokens.size() < 2) {
         throw std::runtime_error("Invalid arguments");
     }
-
+    ReadBufferArgs result;
+    result.offset = std::strtol(tokens[0].c_str(), nullptr, 10);
+    result.length = std::strtol(tokens[1].c_str(), nullptr, 10);
     return result;
 }
 
@@ -257,15 +207,13 @@ struct SetTimeArgs {
     int epoch;
 };
 
-SetTimeArgs parseSetTimeArgsArgs(const std::string &args) {
-    std::istringstream iss(args);
-    SetTimeArgs result;
-    iss >> result.epoch;
-
-    if (iss.fail()) {
+SetTimeArgs parseSetTimeArgs(const std::string &args) {
+    auto tokens = splitBySpace(args);
+    if (tokens.size() < 1) {
         throw std::runtime_error("Invalid arguments");
     }
-
+    SetTimeArgs result;
+    result.epoch = std::strtol(tokens[0].c_str(), nullptr, 10);
     return result;
 }
 
@@ -289,6 +237,32 @@ inline std::string SetTimeResponseToJson(const SetTimeResponse& r) {
 }
 
 
+struct CalibrateArgs {
+    int low;
+    int high;
+    int weight;
+};
+
+CalibrateArgs parseCalibrateArgs(const std::string &args) {
+    auto tokens = splitBySpace(args);
+    if (tokens.size() < 3) {
+        throw std::runtime_error("Invalid arguments");
+    }
+    CalibrateArgs result;
+    result.low = std::strtol(tokens[0].c_str(), nullptr, 10);
+    result.high = std::strtol(tokens[1].c_str(), nullptr, 10);
+    result.weight = std::strtol(tokens[2].c_str(), nullptr, 10);
+    return result;
+}
+
+inline std::string CalibrateArgsToJson(const CalibrateArgs& r) {
+    return std::string("{") +
+        "\"low\":" + std::to_string(r.low) +
+        ",\"high\":" + std::to_string(r.high) +
+        ",\"weight\":" + std::to_string(r.weight) + "}";
+}
+
+
 struct ReadBufferResponse {
     std::vector<ReadBufferResponseRecordsItem> records;
     int length;
@@ -306,32 +280,6 @@ inline std::string ReadBufferResponseToJson(const ReadBufferResponse& r) {
             return arr;
         }() + "]" +
         ",\"length\":" + std::to_string(r.length) + "}";
-}
-
-
-struct CalibrateArgs {
-    int low;
-    int high;
-    int weight;
-};
-
-CalibrateArgs parseCalibrateArgsArgs(const std::string &args) {
-    std::istringstream iss(args);
-    CalibrateArgs result;
-    iss >> result.low >> result.high >> result.weight;
-
-    if (iss.fail()) {
-        throw std::runtime_error("Invalid arguments");
-    }
-
-    return result;
-}
-
-inline std::string CalibrateArgsToJson(const CalibrateArgs& r) {
-    return std::string("{") +
-        "\"low\":" + std::to_string(r.low) +
-        ",\"high\":" + std::to_string(r.high) +
-        ",\"weight\":" + std::to_string(r.weight) + "}";
 }
 
 
@@ -355,15 +303,13 @@ struct SetSamplingRateArgs {
     int rate;
 };
 
-SetSamplingRateArgs parseSetSamplingRateArgsArgs(const std::string &args) {
-    std::istringstream iss(args);
-    SetSamplingRateArgs result;
-    iss >> result.rate;
-
-    if (iss.fail()) {
+SetSamplingRateArgs parseSetSamplingRateArgs(const std::string &args) {
+    auto tokens = splitBySpace(args);
+    if (tokens.size() < 1) {
         throw std::runtime_error("Invalid arguments");
     }
-
+    SetSamplingRateArgs result;
+    result.rate = std::strtol(tokens[0].c_str(), nullptr, 10);
     return result;
 }
 
