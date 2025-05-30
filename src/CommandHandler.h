@@ -2,6 +2,7 @@
 #include <string>
 #include "DataLogger.h"
 #include <build_metadata.h>
+#include <sstream>
 
 const std::string STATUS_OK_JSON = "{\"status\":\"ok\"}";
 
@@ -21,14 +22,20 @@ public:
     // Helper to parse command and args from a full command string
     static std::pair<std::string, std::string> parseCommand(const std::string &fullCommand)
     {
-        size_t spaceIdx = fullCommand.find(' ');
-        if (spaceIdx == std::string::npos)
+        std::istringstream iss(fullCommand);
+        std::string command;
+        iss >> command; // This automatically handles leading/trailing whitespace
+
+        if (command.empty())
         {
-            return {fullCommand, ""};
+            return {"", ""};
         }
-        return {
-            fullCommand.substr(0, spaceIdx),
-            fullCommand.substr(spaceIdx + 1)};
+
+        // Get the rest of the line as args
+        std::string args;
+        std::getline(iss >> std::ws, args); // std::ws skips leading whitespace
+
+        return {command, args};
     }
 };
 
