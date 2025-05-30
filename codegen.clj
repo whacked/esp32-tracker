@@ -36,7 +36,7 @@
 (def CommandsSchema
   [:sequential Command])
 
-(def commands
+(def $commands
   [{:name "getVersion"
     :args []
     :response string?
@@ -132,14 +132,14 @@
 (comment
   (println "Validating good commands:")
 
-  (println (m/validate CommandsSchema commands))
+  (println (m/validate CommandsSchema $commands))
 
-  (when (not (m/validate CommandsSchema commands))
+  (when (not (m/validate CommandsSchema $commands))
     (println "\nExplain failure:")
-    (clojure.pprint/pprint (m/explain CommandsSchema commands)))
+    (clojure.pprint/pprint (m/explain CommandsSchema $commands)))
 
   (def bad-commands
-    (-> commands
+    (-> $commands
         ;; Remove :name from the first command
         (update 0 dissoc :name)
         ;; Change :args to a string in the second command
@@ -297,7 +297,7 @@
         (.write w (emit-python-spec-entry cmd)))
       (.write w "}\n"))))
 
-(def cpp-type-map
+(def CppTypeMap
   {string? "std::string"
    int? "int"
    float? "float"
@@ -313,7 +313,7 @@
   (cond
     (and (vector? clj-type) (= (first clj-type) :enum))
     "RecordType" ; or dynamically (name of the enum)
-    :else (get cpp-type-map clj-type)))
+    :else (get CppTypeMap clj-type)))
 
 (defn cpp-struct-name [command-name suffix]
   (str (capitalize-first-char command-name) suffix))
@@ -350,10 +350,10 @@
                 " = \"" name "\";\n")))
   )
 
-(defn collect-cpp-structs-in-schema [schema class-name acc]
+(defn collect-cpp-structs-in-schema [malli-schema class-name acc]
   (cond
-    (and (vector? schema) (= (first schema) :map))
-    (let [fields (rest schema)
+    (and (vector? malli-schema) (#{:map :vector} (first malli-schema)))
+    (let [fields (rest malli-schema)
           acc' (reduce
                 (fn [a [k v]]
                   (collect-cpp-structs-in-schema
@@ -361,19 +361,48 @@
                    (str class-name (capitalize-first-char (name k))) a))
                 acc
                 fields)]
-      (if (contains? acc' schema)
+      (if (contains? acc' malli-schema)
         acc'
-        (assoc acc' schema class-name)))
-    (and (vector? schema) (= (first schema) :sequential))
-    (collect-cpp-structs-in-schema (second schema) (str class-name "Item") acc)
+        (assoc acc' malli-schema class-name)))
+    (and (vector? malli-schema) (= (first malli-schema) :sequential))
+    (collect-cpp-structs-in-schema (second malli-schema) (str class-name "Item") acc)
     :else acc))
+
+(defn generate-cpp-arg-structs-and-parsers [arg-schemas class-name acc]
+  (println "generate-cpp-arg-structs-and-parsers" arg-schemas class-name)
+  (println (str
+  "struct " class-name " {\n"
+  (->> arg-schemas
+    (map (fn [arg-schema]
+           ))
+    (doall)
+  )))
+  (if (empty? arg-schemas)
+    acc
+    ;;(recur (rest arg-schemas) class-name (assoc acc {} class-name))
+    (assoc acc [:vector] class-name)
+    )
+  )
+
+(defn arg-schema-to-malli-schema [arg-schema]
+  (when-not (empty? arg-schema)
+   (apply vector :vector (->> arg-schema
+    (map (fn [{:keys [name type]}]
+      [(keyword name) type]))))))
 
 (defn collect-cpp-structs
   ([commands] (collect-cpp-structs commands {}))
   ([commands acc]
    (reduce
-    (fn [acc {:keys [name response]}]
-      (collect-cpp-structs-in-schema response (cpp-struct-name name "Response") acc))
+    (fn [acc {:keys [name args response]}]
+
+    ;; (println "GOT ARGS " (arg-schema-to-malli-schema args))
+     (->> acc
+        ;; (generate-cpp-arg-structs-and-parsers args (cpp-struct-name name "Args"))
+        (collect-cpp-structs-in-schema
+        (arg-schema-to-malli-schema args)
+        (cpp-struct-name name "Args"))
+        (collect-cpp-structs-in-schema response (cpp-struct-name name "Response"))))
     acc
     commands)))
 
@@ -392,10 +421,28 @@
     "            return arr;\n"
     "        }() + \"]\""))
 
+(defn emit-cpp-string-parser [class-name schema class-map]
+
+ (str 
+  class-name " parse" class-name "Args(const std::string &args) {
+    std::istringstream iss(args);
+    " class-name " result;
+    iss >> " (->> (rest schema) (map (fn [[k _]] (str "result." (name k)))) (clojure.string/join " >> ")) ";
+
+    if (iss.fail()) {
+        throw std::runtime_error(\"Invalid arguments\");
+    }
+
+    return result;
+}\n\n"))
+
+(defn emit-cpp-string-parser-signature [class-name]
+  (str "inline std::string " class-name "ToJson(const " class-name "& r)"))
+
 ;; Update this function:
 (defn emit-cpp-tojson [class-name schema class-map]
   (let [fields (rest schema)]
-    (str "inline std::string " class-name "ToJson(const " class-name "& r) {\n"
+    (str (emit-cpp-string-parser-signature class-name) " {\n"
          "    return std::string(\"{\") +\n"
          (clojure.string/join " +\n"
            (map-indexed
@@ -472,37 +519,65 @@
 
 (defn emit-cpp-header-file [commands out-path]
   (let [class-map (collect-cpp-structs commands)
+        struct-forward-decls (->> class-map
+                                  (map (fn [[schema class-name]]
+                                         (str "struct " class-name ";")))
+                                  (clojure.string/join "\n"))
+        function-forward-decls (->> class-map
+                                  (map (fn [[schema class-name]]
+                                         (str (emit-cpp-string-parser-signature class-name) ";")))
+                                  (clojure.string/join "\n"))
         struct-and-tojson-defs (->> class-map
                                     (map (fn [[schema class-name]]
-                                           (str (emit-cpp-struct class-name schema class-map)
-                                                (emit-cpp-tojson class-name schema class-map)))
+                                          ;; (println "--> GEN >>>" class-name " // " schema "\n\n")
+                                          (str (emit-cpp-struct class-name schema class-map)
+                                               (when (= (first schema) :vector)
+                                                 (emit-cpp-string-parser class-name schema class-map))
+                                               (emit-cpp-tojson class-name schema class-map)))
                                     )
                                     (clojure.string/join "\n"))]
+    ;;(clojure.pprint/pprint class-map)
     (with-open [w (io/writer out-path)]
       (.write w "// AUTO-GENERATED FILE. DO NOT EDIT.\n\n")
+      (.write w "// Header guard\n")
       (.write w "#pragma once\n")
-      (.write w "#include <string>\n#include <vector>\n#include <time.h>\n\n")
+      (.write w "// Standard includes\n") 
+      (.write w (str (->> ["string" "vector" "time.h" "sstream"]
+                         (map #(str "#include <" % ">"))
+                         (interpose "\n")
+                         (apply str))
+                     "\n\n"))
+      (.write w "// RecordType enum definition\n")
       (.write w (emit-cpp-enum-from-malli "RecordType" RecordType))
+      (.write w "// RecordType toString function\n")
       (.write w (emit-cpp-enum-to-string-fn "RecordType" RecordType))
-      (.write w (emit-cpp-struct-from-malli "Record" Record cpp-type-map))
-      (.write w (emit-cpp-tojson "Record" Record cpp-type-map))
+      (.write w "// Record struct definition\n")
+      (.write w (emit-cpp-struct-from-malli "Record" Record CppTypeMap))
+      (.write w "// Record toJson function\n")
+      (.write w (emit-cpp-tojson "Record" Record CppTypeMap))
+      (.write w "// JSON string escaping utility\n")
       (.write w cpp-json-escape-fn)
+      (.write w "// Command enum definition\n")
       (.write w (emit-cpp-enum commands))
+      (.write w "// Command string constants\n")
       (.write w (emit-cpp-constants commands))
       (.write w "\n")
+      (.write w "// Command structs and serialization\n")
+      (.write w (str struct-forward-decls "\n\n"))
+      (.write w (str function-forward-decls "\n\n"))
       (.write w struct-and-tojson-defs))))
 
 (let [output-file-path (last *command-line-args*)]
   (cond
     (clojure.string/ends-with? output-file-path ".py")
     (do
-      (emit-python-file commands output-file-path)
+      (emit-python-file $commands output-file-path)
       (println (str "wrote to " output-file-path))
       (System/exit 0))
 
     (clojure.string/ends-with? output-file-path ".h")
     (do
-      (emit-cpp-header-file commands output-file-path)
+      (emit-cpp-header-file $commands output-file-path)
       (println (str "wrote to " output-file-path))
       (System/exit 0))
 

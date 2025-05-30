@@ -43,11 +43,13 @@ public:
             if (targetTime > 0)
             {
                 dataLogger.setTimeOffset(targetTime - time(nullptr));
-                return "{\"status\":\"ok\",\"offset\":" +
-                       std::to_string(dataLogger.getTimeOffset()) +
-                       ",\"time\":\"" + dataLogger.getTimestamp() + "\"}";
+                SetTimeResponse response{
+                    .status = "ok",
+                    .offset = dataLogger.getTimeOffset(),
+                    .time = dataLogger.getTimestamp()};
+                return SetTimeResponseToJson(response);
             }
-            return "{\"status\":\"error\",\"message\":\"Invalid timestamp\"}";
+            return errorJsonResponse("Invalid timestamp");
         }
         else if (command == CMD_CLEARBUFFER)
         {
@@ -86,14 +88,18 @@ public:
         }
         else if (command == CMD_GETNOW)
         {
-            return "{\"epoch\":" + std::to_string(dataLogger.getCorrectedTime()) +
-                   ",\"local\":\"" + dataLogger.getTimestamp() + "\"}";
+            GetNowResponse response{
+                .epoch = dataLogger.getCorrectedTime(),
+                .local = dataLogger.getTimestamp()};
+            return GetNowResponseToJson(response);
         }
         else if (command == CMD_GETSTATUS)
         {
-            return "{\"logging\":" + std::string(dataLogger.isLoggingEnabled() ? "true" : "false") +
-                   ",\"bufferSize\":" + std::to_string(dataLogger.getBufferSize()) +
-                   ",\"rateHz\":" + std::to_string(samplingRateHz) + "}";
+            GetStatusResponse response{
+                .logging = dataLogger.isLoggingEnabled(),
+                .bufferSize = dataLogger.getBufferSize(),
+                .rateHz = samplingRateHz};
+            return GetStatusResponseToJson(response);
         }
         else if (command == CMD_SETSAMPLINGRATE)
         {
@@ -103,23 +109,25 @@ public:
                 samplingRateHz = rate;
                 return "{\"status\":\"ok\",\"rate\":" + std::to_string(rate) + "}";
             }
-            return "{\"status\":\"error\",\"message\":\"Invalid rate\"}";
+            return errorJsonResponse("Invalid rate");
         }
         else if (command == CMD_DROPRECORDS)
         {
             size_t spaceIdx = args.find(' ');
             if (spaceIdx == std::string::npos)
             {
-                return "{\"status\":\"error\",\"message\":\"Invalid format\"}";
+                return errorJsonResponse("Invalid format");
             }
 
             size_t offset = std::stoul(args.substr(0, spaceIdx));
             size_t length = std::stoul(args.substr(spaceIdx + 1));
 
             bool success = dataLogger.dropRecords(offset, length);
-            return "{\"status\":\"" + std::string(success ? "ok" : "error") +
-                   "\",\"offset\":" + std::to_string(offset) +
-                   ",\"length\":" + std::to_string(length) + "}";
+            DropRecordsResponse response{
+                .status = success ? "ok" : "error",
+                .offset = offset,
+                .length = length};
+            return DropRecordsResponseToJson(response);
         }
         else if (command == CMD_SETLOGLEVEL)
         {
@@ -128,28 +136,43 @@ public:
             {
                 return errorJsonResponse("Invalid format");
             }
-                return errorJsonResponse("Invalid format");
 
-            bool success = dataLogger.dropRecords(offset, length);
-            return "{\"status\":\"" + std::string(success ? "ok" : "error") +
-                   "\",\"offset\":" + std::to_string(offset) +
-                   ",\"length\":" + std::to_string(length) + "}";
-        }
-        else if (command == CMD_SETLOGLEVEL)
-        {
-            size_t spaceIdx = args.find(' ');
-            if (spaceIdx == std::string::npos)
+            std::string printer = args.substr(0, spaceIdx);
+            int level = std::stoi(args.substr(spaceIdx + 1));
+
+            if (level >= 0 && level <= 3)
             {
-                return errorResponse("Invalid format");
+                if (printer == "raw")
+                {
+                    rawPrinter.logLevel = level;
+                }
+                else if (printer == "event")
+                {
+                    eventPrinter.logLevel = level;
+                }
+                else if (printer == "status")
+                {
+                    statusPrinter.logLevel = level;
+                }
+                else if (printer == "all")
+                {
+                    rawPrinter.logLevel = level;
+                    eventPrinter.logLevel = level;
+                    statusPrinter.logLevel = level;
+                }
+                else
+                {
+                    return errorJsonResponse("Invalid printer name");
+                }
+
+                SetLogLevelResponse response{
+                    "ok",
+                    printer,
+                    level};
+                return SetLogLevelResponseToJson(response);
             }
-            size_t length = std::stoul(args.substr(spaceIdx + 1));
-
-            bool success = dataLogger.dropRecords(offset, length);
-            return "{\"status\":\"" + std::string(success ? "ok" : "error") +
-                   "\",\"offset\":" + std::to_string(offset) +
-                   ",\"length\":" + std::to_string(length) + "}";
+            return errorJsonResponse("Invalid level");
         }
-
-        return "{\"status\":\"error\",\"message\":\"Unknown command: '" + json_escape(command) + "'\"}";
+        return errorJsonResponse("Unknown command: '" + command + "'");
     }
 };
