@@ -5,6 +5,7 @@
 #include "StatusPrinter.h"
 #include "DataLogger.h"
 #include "BtServer.h"
+#include "generated/cpp_bt_commands_autogen.h"
 
 #define DEBUG_CALIBRATION 0
 

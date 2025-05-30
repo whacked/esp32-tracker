@@ -1,7 +1,7 @@
-src/generated/python_codegen.py: ./codegen.clj
+src/generated/python_autogen.py: ./codegen.clj
 	bb $< $@
 
-src/generated/cpp_bt_commands_codegen.h: ./codegen.clj
+src/generated/cpp_bt_commands_autogen.h: ./codegen.clj
 	bb $< $@
 
 # Use environment variables set by nix shell

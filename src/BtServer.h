@@ -7,7 +7,7 @@
 #include <deque>
 #include "DataLogger.h"
 #include "StatusPrinter.h"
-#include "generated/cpp_bt_commands_codegen.h"
+#include "generated/cpp_bt_commands_autogen.h"
 #include <build_metadata.h>
 
 // BLE UUIDs

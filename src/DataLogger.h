@@ -1,7 +1,7 @@
 #pragma once
 #include <deque>
 #include <time.h>
-#include "generated/cpp_bt_commands_codegen.h"
+#include "generated/cpp_bt_commands_autogen.h"
 #include <vector>
 #include <algorithm> // for std::min
 
